@@ -1,0 +1,9 @@
+title = "gitleaks config"
+
+[allowlist]
+description = "Ignore generated artifacts and safe test fixtures"
+paths = [
+  '''data/.*results.*''',
+  '''data/richness_.*''',
+  '''tests/test_models\.py''',
+]

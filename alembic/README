@@ -1,0 +1,105 @@
+Multi-API Job Aggregator Database Migrations
+============================================
+
+This directory contains Alembic database migrations for the Multi-API Job Aggregator project.
+
+## Setup
+
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. Configure database URL in one of these ways (in order of priority):
+   - Set DATABASE_URL environment variable
+   - Set JOB_SCRAPER_DB_DSN environment variable
+   - Configure db.dsn in config.yaml
+   - Edit alembic.ini sqlalchemy.url
+
+## Common Commands
+
+### Run all pending migrations
+```bash
+alembic upgrade head
+```
+
+### Rollback one migration
+```bash
+alembic downgrade -1
+```
+
+### Rollback to a specific revision
+```bash
+alembic downgrade <revision_id>
+```
+
+### Show current revision
+```bash
+alembic current
+```
+
+### Show migration history
+```bash
+alembic history --verbose
+```
+
+### Create a new migration (auto-generate)
+```bash
+alembic revision --autogenerate -m "description of changes"
+```
+
+### Create a new migration (manual)
+```bash
+alembic revision -m "description of changes"
+```
+
+## Migration Files
+
+Migrations are stored in the `versions/` directory:
+
+- `001_initial_schema.py` - Initial schema with runs, jobs, job_seen, and source_errors tables
+
+## Database Schema
+
+### Tables
+
+1. **runs** - Tracks each scraper run
+   - id (UUID, primary key)
+   - started_at, ended_at (timestamps)
+   - status (running/success/failed)
+   - sources (JSONB array)
+   - total_jobs (integer)
+
+2. **jobs** - Stores job postings
+   - id (UUID, primary key)
+   - dedupe_key (unique text for deduplication)
+   - source, source_job_id
+   - title, company, location, url
+   - description, salary, employment_type
+   - posted_date, remote, category
+   - tags, skills (JSONB arrays)
+   - raw_payload (JSONB)
+   - created_at, updated_at, last_seen_at (timestamps)
+
+3. **job_seen** - Junction table linking runs to jobs
+   - id (UUID, primary key)
+   - run_id (FK to runs)
+   - job_id (FK to jobs)
+   - seen_at (timestamp)
+   - Unique constraint on (run_id, job_id)
+
+4. **source_errors** - Error tracking for API sources
+   - id (UUID, primary key)
+   - run_id (FK to runs)
+   - source (API source name)
+   - message (error message)
+   - payload (JSONB)
+   - created_at (timestamp)
+
+## Best Practices
+
+1. **Always review auto-generated migrations** before running them
+2. **Test migrations on a copy of production data** before deploying
+3. **Keep migrations small and focused** on single logical changes
+4. **Never edit migration files** that have been deployed to production
+5. **Use downgrade()** to make migrations reversible when possible

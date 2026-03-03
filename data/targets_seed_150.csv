@@ -1,0 +1,148 @@
+company_name,priority,category
+Amazon,1,big_tech
+Google,1,big_tech
+Microsoft,1,big_tech
+Meta,1,big_tech
+Apple,1,big_tech
+Netflix,1,big_tech
+Infosys,1,consulting
+Tata Consultancy Services,1,consulting
+Cognizant,1,consulting
+Wipro,1,consulting
+HCLTech,1,consulting
+Tech Mahindra,1,consulting
+Tesla,2,big_tech
+NVIDIA,2,big_tech
+Intel,2,big_tech
+IBM,2,big_tech
+Oracle,2,big_tech
+Salesforce,2,big_tech
+Adobe,2,big_tech
+Cisco,2,big_tech
+Qualcomm,2,big_tech
+Samsung,2,big_tech
+ByteDance,2,big_tech
+TikTok,2,big_tech
+Uber,2,big_tech
+Lyft,2,big_tech
+Airbnb,2,big_tech
+Stripe,2,big_tech
+Coinbase,2,big_tech
+Block,2,big_tech
+Square,2,big_tech
+PayPal,2,big_tech
+Databricks,2,big_tech
+Snowflake,2,big_tech
+Atlassian,2,big_tech
+Shopify,2,big_tech
+Dropbox,2,big_tech
+Reddit,2,big_tech
+Spotify,2,big_tech
+Pinterest,2,big_tech
+Snap,2,big_tech
+Palantir,2,big_tech
+ServiceNow,2,big_tech
+Workday,2,big_tech
+Intuit,2,big_tech
+Zoom,2,big_tech
+Twilio,2,big_tech
+Okta,2,big_tech
+Cloudflare,2,big_tech
+HubSpot,2,big_tech
+DocuSign,2,big_tech
+LinkedIn,2,big_tech
+OpenAI,2,big_tech
+Anthropic,2,big_tech
+Cohere,2,big_tech
+Datadog,2,big_tech
+Elastic,2,big_tech
+Confluent,2,big_tech
+MongoDB,2,big_tech
+HashiCorp,2,big_tech
+Splunk,2,big_tech
+VMware,2,big_tech
+Broadcom,2,big_tech
+AMD,2,big_tech
+ARM,2,big_tech
+Micron,2,big_tech
+Texas Instruments,2,big_tech
+Applied Materials,2,big_tech
+ASML,2,big_tech
+Lam Research,2,big_tech
+Cadence,2,big_tech
+Synopsys,2,big_tech
+JPMorgan Chase,2,finance
+Goldman Sachs,2,finance
+Morgan Stanley,2,finance
+Bank of America,2,finance
+Citigroup,2,finance
+Wells Fargo,2,finance
+Capital One,2,finance
+American Express,2,finance
+Visa,2,finance
+Mastercard,2,finance
+Bloomberg,2,finance
+BlackRock,2,finance
+Fidelity Investments,2,finance
+Charles Schwab,2,finance
+Robinhood,2,finance
+Two Sigma,2,finance
+Citadel,2,finance
+Jane Street,2,finance
+DRW,2,finance
+Hudson River Trading,2,finance
+Susquehanna International Group,2,finance
+Accenture,2,consulting
+Deloitte,2,consulting
+PwC,2,consulting
+KPMG,2,consulting
+Ernst & Young,2,consulting
+Capgemini,2,consulting
+LTIMindtree,2,consulting
+Larsen & Toubro,2,consulting
+NTT DATA,2,consulting
+DXC Technology,2,consulting
+CGI,2,consulting
+Booz Allen Hamilton,2,consulting
+UnitedHealth Group,3,healthcare
+CVS Health,3,healthcare
+Johnson & Johnson,3,healthcare
+Pfizer,3,healthcare
+Merck,3,healthcare
+AbbVie,3,healthcare
+Novartis,3,healthcare
+Roche,3,healthcare
+Amgen,3,healthcare
+Gilead Sciences,3,healthcare
+Moderna,3,healthcare
+Regeneron,3,healthcare
+Medtronic,3,healthcare
+Siemens Healthineers,3,healthcare
+GE HealthCare,3,healthcare
+Boeing,3,defense
+Lockheed Martin,3,defense
+Northrop Grumman,3,defense
+Raytheon,3,defense
+General Motors,3,other
+Ford,3,other
+General Electric,3,other
+Siemens,3,other
+Honeywell,3,other
+3M,3,other
+Caterpillar,3,other
+Schneider Electric,3,other
+ABB,3,other
+Bosch,3,other
+Panasonic,3,other
+Walmart,3,other
+Target,3,other
+Home Depot,3,other
+Costco,3,other
+Nike,3,other
+Verizon,3,other
+AT&T,3,other
+T-Mobile,3,other
+Comcast,3,other
+Charter Communications,3,other
+Rivian,3,other
+Lucid Motors,3,other

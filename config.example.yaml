@@ -1,0 +1,140 @@
+# Multi-API Job Scraper Configuration
+# Copy this file to config.yaml and fill in your API credentials
+
+# Adzuna API (3M+ global jobs)
+# Register: https://developer.adzuna.com/signup
+adzuna:
+  app_id: "your_adzuna_app_id_here"
+  app_key: "your_adzuna_app_key_here"
+
+# USAJobs API (US government jobs)
+# Apply: https://developer.usajobs.gov/apirequest/
+usajobs:
+  api_key: "your_usajobs_api_key_here"
+  user_agent: "your-email@example.com"
+
+# The Muse API (Curated jobs with company culture info)
+themuse:
+  api_key: "your_themuse_api_key_here"  # Optional, may work without
+
+# Findwork API (Developer-focused job board)
+# Docs: https://findwork.dev/
+findwork:
+  api_key: "your_findwork_api_key_here"
+  base_url: "https://findwork.dev/api/jobs/"
+  requests_per_minute: 60
+
+# RemoteOK - No configuration needed (free, no auth)
+remoteok: {}
+
+# Remotive - No configuration needed (free, no auth)
+remotive: {}
+
+# We Work Remotely RSS - No configuration needed (free, no auth)
+weworkremotely:
+  base_url: "https://weworkremotely.com/remote-jobs.rss"
+
+# Built In jobs (multi-city HTML extraction)
+builtin:
+  # Optional override. If omitted, a default US city list is used.
+  domains: []
+  max_pages: 5
+  requests_per_minute: 60
+
+# HN RSS - No configuration needed (free, no auth)
+hnrss:
+  base_url: "https://hnrss.org/jobs"
+
+# JobSpy - No configuration needed (just install: pip install python-jobspy)
+jobspy: {}
+
+# Greenhouse (public ATS boards)
+greenhouse:
+  boards:
+    - "stripe"
+    - "airbnb"
+  include_content: true
+
+# Lever (public ATS boards)
+lever:
+  sites:
+    - "netflix"
+
+# SmartRecruiters (public ATS boards)
+# Provide company slugs from board URLs like:
+#   https://jobs.smartrecruiters.com/Uber -> companies: ["uber"]
+smartrecruiters:
+  companies: []
+  include_content: false
+  requests_per_minute: 60
+
+# Ashby (public ATS boards)
+# Board URL pattern: https://jobs.ashbyhq.com/{company}
+ashby:
+  companies: []
+  include_content: false
+  requests_per_minute: 60
+
+# CareerOneStop (US Department of Labor)
+# Docs: https://api.careeronestop.org/
+careeronestop:
+  api_key: "your_careeronestop_api_key_here"
+  user_id: "your_careeronestop_user_id_here"
+
+# JSearch (RapidAPI)
+# Docs: https://rapidapi.com/
+jsearch:
+  api_key: "your_rapidapi_key_here"
+  host: "jsearch.p.rapidapi.com"
+  safe_mode: true
+  min_interval_seconds: 1.5
+  jitter_seconds: 0.7
+  requests_per_minute: 25
+  max_pages: 10
+  max_retries: 4
+  backoff_base_seconds: 2.0
+  backoff_cap_seconds: 45.0
+  cooldown_every_n_requests: 5
+  cooldown_seconds: 8.0
+  respect_retry_after: true
+  user_agent: "multi-api-aggregator/1.0"
+  timeout_seconds: 30.0
+  rate_limit_remaining_floor: 1
+
+# Postgres storage
+db:
+  dsn: "postgresql+psycopg://user:pass@localhost:5432/multi_api_aggregator?sslmode=require"
+  retention_days: 30
+
+# Scheduler (local time)
+scheduler:
+  hour: 23
+  minute: 59
+
+# US-only filtering
+us_only: true
+
+# Ingestion settings
+ingestion:
+  # Sources that should ignore max_per_source limit (fetch all jobs)
+  uncapped_sources:
+    - greenhouse
+    - lever
+    - smartrecruiters
+    - ashby
+  # Drop stale jobs when posted_date is known.
+  max_posting_age_days: 60
+
+# Custom career site discovery and scrape gates
+discovery:
+  selector_min_confidence: 0.6
+  selector_min_jobs: 3
+  require_approved_selectors: true
+  hybrid_browser_fallback: true
+
+# Visa/H1B/OPT tagging (best-effort; not a guarantee of sponsorship)
+visa:
+  tagging_enabled: true
+  # Optional: list sponsor-friendly companies (for company-based tagging).
+  # You can also set JOB_SCRAPER_VISA_SPONSOR_COMPANIES / *_FILE via env vars.
+  sponsor_companies: []

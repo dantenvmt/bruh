@@ -1,0 +1,193 @@
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: job_aggregator_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobscraper}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-jobscraper}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobscraper}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Database migrations
+  migrations:
+    build: .
+    container_name: job_aggregator_migrations
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Allow overriding DB target (e.g., Supabase Postgres) via JOB_SCRAPER_DB_DSN.
+      DATABASE_URL: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
+    command: alembic upgrade head
+    restart: "no"
+
+  # FastAPI server
+  api:
+    build: .
+    container_name: job_aggregator_api
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./secrets.json:/app/secrets.json:ro
+      - ./data:/app/data
+    environment:
+      # Load API keys from secrets.json
+      JOB_SCRAPER_SECRETS_FILE: /app/secrets.json
+
+      # Optional: comma-separated list of extra YAML config files (e.g. discovered ATS targets)
+      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-}
+
+      # Database
+      JOB_SCRAPER_DB_DSN: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
+
+      # Ingestion freshness filtering
+      JOB_SCRAPER_MAX_POSTING_AGE_DAYS: ${JOB_SCRAPER_MAX_POSTING_AGE_DAYS:-60}
+
+      # Tier-1 sources
+      ASHBY_COMPANIES: ${ASHBY_COMPANIES:-}
+      ASHBY_INCLUDE_CONTENT: ${ASHBY_INCLUDE_CONTENT:-false}
+      ASHBY_REQUESTS_PER_MINUTE: ${ASHBY_REQUESTS_PER_MINUTE:-60}
+      WEWORKREMOTELY_BASE_URL: ${WEWORKREMOTELY_BASE_URL:-https://weworkremotely.com/remote-jobs.rss}
+      BUILTIN_DOMAINS: ${BUILTIN_DOMAINS:-}
+      BUILTIN_MAX_PAGES: ${BUILTIN_MAX_PAGES:-5}
+      BUILTIN_REQUESTS_PER_MINUTE: ${BUILTIN_REQUESTS_PER_MINUTE:-60}
+
+      # API settings
+      JOB_SCRAPER_CORS_ORIGINS: ${JOB_SCRAPER_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      JOB_SCRAPER_RATE_LIMIT: ${JOB_SCRAPER_RATE_LIMIT:-60/minute}
+      JOB_SCRAPER_API_KEY: ${JOB_SCRAPER_API_KEY:-}
+      JOB_SCRAPER_REQUIRE_API_KEY: ${JOB_SCRAPER_REQUIRE_API_KEY:-true}
+
+      # Visa tagging (optional; best-effort, not a guarantee of sponsorship)
+      JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+    command: uvicorn job_scraper.api.app:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Scheduler (runs daily job ingestion)
+  scheduler:
+    build: .
+    container_name: job_aggregator_scheduler
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - ./secrets.json:/app/secrets.json:ro
+      - ./data:/app/data
+    environment:
+      # Load API keys from secrets.json
+      JOB_SCRAPER_SECRETS_FILE: /app/secrets.json
+
+      # Optional: comma-separated list of extra YAML config files (e.g. discovered ATS targets)
+      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-}
+
+      # Database
+      JOB_SCRAPER_DB_DSN: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
+
+      # Scheduler settings
+      JOB_SCRAPER_SCHEDULE_HOUR: ${JOB_SCRAPER_SCHEDULE_HOUR:-23}
+      JOB_SCRAPER_SCHEDULE_MINUTE: ${JOB_SCRAPER_SCHEDULE_MINUTE:-59}
+      JOB_SCRAPER_RETENTION_DAYS: ${JOB_SCRAPER_RETENTION_DAYS:-30}
+      JOB_SCRAPER_US_ONLY: ${JOB_SCRAPER_US_ONLY:-true}
+      JOB_SCRAPER_MAX_POSTING_AGE_DAYS: ${JOB_SCRAPER_MAX_POSTING_AGE_DAYS:-60}
+      # Keep Ashby separate from main scheduler by default
+      JOB_SCRAPER_SCHEDULE_EXCLUDE_SOURCES: ${JOB_SCRAPER_SCHEDULE_EXCLUDE_SOURCES:-ashby}
+
+      # Custom site scraper (every 15 min if enabled)
+      JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER: ${JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER:-false}
+
+      # Tier-1 sources
+      WEWORKREMOTELY_BASE_URL: ${WEWORKREMOTELY_BASE_URL:-https://weworkremotely.com/remote-jobs.rss}
+      BUILTIN_DOMAINS: ${BUILTIN_DOMAINS:-}
+      BUILTIN_MAX_PAGES: ${BUILTIN_MAX_PAGES:-5}
+      BUILTIN_REQUESTS_PER_MINUTE: ${BUILTIN_REQUESTS_PER_MINUTE:-60}
+
+      # Visa tagging (optional; best-effort, not a guarantee of sponsorship)
+      JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+    command: python -m job_scraper.scheduler
+
+  # Dedicated Ashby scheduler (runs separate batch windows)
+  ashby_scheduler:
+    build: .
+    container_name: job_aggregator_ashby_scheduler
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - ./secrets.json:/app/secrets.json:ro
+      - ./data:/app/data
+    environment:
+      # Load API keys from secrets.json
+      JOB_SCRAPER_SECRETS_FILE: /app/secrets.json
+
+      # Optional: comma-separated list of extra YAML config files (e.g. discovered ATS targets)
+      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-}
+
+      # Database
+      JOB_SCRAPER_DB_DSN: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
+
+      # Ingestion settings
+      JOB_SCRAPER_RETENTION_DAYS: ${JOB_SCRAPER_RETENTION_DAYS:-30}
+      JOB_SCRAPER_US_ONLY: ${JOB_SCRAPER_US_ONLY:-true}
+      JOB_SCRAPER_MAX_POSTING_AGE_DAYS: ${JOB_SCRAPER_MAX_POSTING_AGE_DAYS:-60}
+
+      # Ashby adapter settings
+      ASHBY_INCLUDE_CONTENT: ${ASHBY_INCLUDE_CONTENT:-false}
+      ASHBY_REQUESTS_PER_MINUTE: ${ASHBY_REQUESTS_PER_MINUTE:-60}
+
+      # Batch A and B slug lists (non-overlapping recommended)
+      ASHBY_BATCH_A_COMPANIES: ${ASHBY_BATCH_A_COMPANIES:-}
+      ASHBY_BATCH_B_COMPANIES: ${ASHBY_BATCH_B_COMPANIES:-}
+
+      # Batch schedule times (UTC)
+      ASHBY_BATCH_A_HOUR: ${ASHBY_BATCH_A_HOUR:-6}
+      ASHBY_BATCH_A_MINUTE: ${ASHBY_BATCH_A_MINUTE:-0}
+      ASHBY_BATCH_B_HOUR: ${ASHBY_BATCH_B_HOUR:-18}
+      ASHBY_BATCH_B_MINUTE: ${ASHBY_BATCH_B_MINUTE:-0}
+
+      # Batch run tuning
+      ASHBY_BATCH_MAX_PER_SOURCE: ${ASHBY_BATCH_MAX_PER_SOURCE:-999999}
+      ASHBY_BATCH_QUERY: ${ASHBY_BATCH_QUERY:-}
+      ASHBY_BATCH_LOCATION: ${ASHBY_BATCH_LOCATION:-}
+      ASHBY_BATCH_DRY_RUN: ${ASHBY_BATCH_DRY_RUN:-false}
+
+      # Visa tagging (optional; best-effort, not a guarantee of sponsorship)
+      JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
+      JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+    command: python -m job_scraper.scheduler_ashby
+
+volumes:
+  postgres_data:

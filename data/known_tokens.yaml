@@ -1,0 +1,279 @@
+# Known ATS Token Overrides
+#
+# This file maps company names to their actual ATS tokens when they differ from
+# the auto-generated slug. Use this to avoid unnecessary HTTP probing for well-known
+# companies.
+#
+# Format:
+#   "Company Name":
+#     greenhouse: token_or_null
+#     lever: token_or_null
+#     smartrecruiters: token_or_null
+#
+# null = company is not on that platform (skip probing)
+# omitted platform = unknown, will attempt slug generation + probing
+
+overrides:
+  # Big Tech - Common abbreviations and brand names
+  "IBM":
+    greenhouse: ibm
+    lever: ibm
+
+  "AT&T":
+    greenhouse: att
+    lever: null
+    smartrecruiters: ATT
+
+  "Meta":
+    greenhouse: meta
+    lever: meta
+    # Previously known as Facebook, board uses Meta now
+
+  "ByteDance":
+    greenhouse: bytedance
+    lever: null
+    # Parent company of TikTok
+
+  "TikTok":
+    greenhouse: tiktok
+    lever: null
+    # Separate from ByteDance careers portal
+
+  "Block":
+    greenhouse: block
+    lever: block
+    # Formerly Square - now uses Block branding
+
+  "Square":
+    # Redirects to Block, but may still have legacy board
+    greenhouse: null
+    lever: null
+    # Use "Block" instead
+
+  "LinkedIn":
+    greenhouse: null
+    lever: null
+    # LinkedIn uses Microsoft ATS (acquired by Microsoft)
+
+  # Finance - Complex names and abbreviations
+  "JPMorgan Chase":
+    greenhouse: jpmorgan
+    lever: jpmorganchase
+    smartrecruiters: JPMorganChase
+
+  "Goldman Sachs":
+    greenhouse: goldmansachs
+    lever: goldmansachs
+    smartrecruiters: GoldmanSachs
+
+  "Morgan Stanley":
+    greenhouse: morganstanley
+    lever: morganstanley
+
+  "Bank of America":
+    greenhouse: bankofamerica
+    lever: null
+    smartrecruiters: BankofAmerica
+
+  "Wells Fargo":
+    greenhouse: wellsfargo
+    lever: null
+
+  "Capital One":
+    greenhouse: capitalone
+    lever: capitalone
+
+  "American Express":
+    greenhouse: americanexpress
+    lever: null
+    smartrecruiters: AmericanExpress
+
+  "Charles Schwab":
+    greenhouse: charlesschwab
+    lever: null
+
+  "Two Sigma":
+    greenhouse: twosigma
+    lever: twosigma
+
+  "Jane Street":
+    greenhouse: janestreet
+    lever: janestreet
+
+  "Hudson River Trading":
+    greenhouse: hudsonrivertrading
+    lever: hudsonrivertrading
+
+  "Susquehanna International Group":
+    greenhouse: sig
+    lever: sig
+    # Commonly known as SIG
+
+  # Consulting - Ampersands and complex names
+  "Ernst & Young":
+    greenhouse: ey
+    lever: ey
+    smartrecruiters: EY
+    # Known as EY professionally
+
+  "PwC":
+    greenhouse: pwc
+    lever: pwc
+    smartrecruiters: PwC
+    # PricewaterhouseCoopers uses PwC branding
+
+  "KPMG":
+    greenhouse: kpmg
+    lever: kpmg
+
+  "Deloitte":
+    greenhouse: deloitte
+    lever: deloitte
+    smartrecruiters: Deloitte
+
+  "Accenture":
+    greenhouse: accenture
+    lever: accenture
+    smartrecruiters: Accenture
+
+  "Booz Allen Hamilton":
+    greenhouse: boozallen
+    lever: boozallen
+    # Commonly shortened to Booz Allen
+
+  "Tata Consultancy Services":
+    greenhouse: tcs
+    lever: null
+    # Known as TCS
+
+  "Larsen & Toubro":
+    greenhouse: lnt
+    lever: null
+    # Known as L&T
+
+  "DXC Technology":
+    greenhouse: dxc
+    lever: dxctechnology
+
+  # Semiconductors - Abbreviations
+  "NVIDIA":
+    greenhouse: nvidia
+    lever: nvidia
+
+  "AMD":
+    greenhouse: amd
+    lever: amd
+
+  "ARM":
+    greenhouse: arm
+    lever: arm
+
+  "ASML":
+    greenhouse: asml
+    lever: null
+
+  "Texas Instruments":
+    greenhouse: ti
+    lever: ti
+    # Commonly known as TI
+
+  "Applied Materials":
+    greenhouse: appliedmaterials
+    lever: null
+
+  "Lam Research":
+    greenhouse: lamresearch
+    lever: null
+
+  # Healthcare - Complex names
+  "Johnson & Johnson":
+    greenhouse: jnj
+    lever: null
+    smartrecruiters: JnJ
+    # Known as J&J or JnJ
+
+  "CVS Health":
+    greenhouse: cvshealth
+    lever: null
+
+  "UnitedHealth Group":
+    greenhouse: unitedhealthgroup
+    lever: null
+
+  "GE HealthCare":
+    greenhouse: gehealthcare
+    lever: null
+    # Spun off from General Electric in 2023
+
+  "Siemens Healthineers":
+    greenhouse: siemenshealthineers
+    lever: null
+
+  # Other - Diverse companies
+  "General Electric":
+    greenhouse: ge
+    lever: ge
+    # Known as GE
+
+  "General Motors":
+    greenhouse: gm
+    lever: null
+    # Known as GM
+
+  "3M":
+    greenhouse: 3m
+    lever: 3m
+    # 3M is the official name
+
+  "Home Depot":
+    greenhouse: homedepot
+    lever: null
+    # No space in slug
+
+  "T-Mobile":
+    greenhouse: tmobile
+    lever: tmobile
+    # Hyphen removed
+
+  # Additional known cases
+  "HubSpot":
+    greenhouse: hubspot
+    lever: hubspot
+    # Unusual capitalization but standard slug
+
+  "DocuSign":
+    greenhouse: docusign
+    lever: docusign
+
+  "OpenAI":
+    greenhouse: openai
+    lever: openai
+
+  "HashiCorp":
+    greenhouse: hashicorp
+    lever: hashicorp
+
+  # Defense contractors
+  "Lockheed Martin":
+    greenhouse: lockheedmartin
+    lever: null
+
+  "Northrop Grumman":
+    greenhouse: northropgrumman
+    lever: null
+
+  # Retail
+  "Walmart":
+    greenhouse: null
+    lever: null
+    # Walmart uses proprietary ATS
+
+  "Target":
+    greenhouse: null
+    lever: null
+    # Target uses proprietary ATS
+
+  "Costco":
+    greenhouse: null
+    lever: null
+    # Costco uses proprietary ATS

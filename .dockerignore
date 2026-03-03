@@ -1,0 +1,64 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+
+# Build
+*.egg-info
+dist
+build
+
+# Local config (use .env instead)
+config.yaml
+*.local.yaml
+
+# Environment files (will be mounted separately)
+.env
+.env.*
+
+# Secrets and credentials
+secrets.json
+secrets.*.json
+*.pem
+*.key
+credentials*.json
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+docs/
+
+# Data artifacts
+data/
+*.csv
+*.json
+!package.json

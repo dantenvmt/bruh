@@ -1,0 +1,154 @@
+# Hardcoded list of tech companies for discovery
+# These are companies with known careers pages that may not be in the seed CSV
+
+companies:
+  # Fintech
+  - name: Stripe
+    careers_url: https://stripe.com/jobs
+    priority: 1
+    category: fintech
+
+  - name: Plaid
+    careers_url: https://plaid.com/careers
+    priority: 1
+    category: fintech
+
+  - name: Square
+    careers_url: https://careers.squareup.com
+    priority: 1
+    category: fintech
+
+  - name: Robinhood
+    careers_url: https://robinhood.com/us/en/careers
+    priority: 1
+    category: fintech
+
+  - name: Chime
+    careers_url: https://www.chime.com/careers
+    priority: 2
+    category: fintech
+
+  # Developer Tools
+  - name: GitHub
+    careers_url: https://github.com/about/careers
+    priority: 1
+    category: dev_tools
+
+  - name: GitLab
+    careers_url: https://about.gitlab.com/jobs
+    priority: 1
+    category: dev_tools
+
+  - name: Atlassian
+    careers_url: https://www.atlassian.com/company/careers
+    priority: 1
+    category: dev_tools
+
+  - name: JetBrains
+    careers_url: https://www.jetbrains.com/careers
+    priority: 2
+    category: dev_tools
+
+  - name: Datadog
+    careers_url: https://careers.datadoghq.com
+    priority: 1
+    category: dev_tools
+
+  - name: HashiCorp
+    careers_url: https://www.hashicorp.com/careers
+    priority: 2
+    category: dev_tools
+
+  # Cloud/Infrastructure
+  - name: Cloudflare
+    careers_url: https://www.cloudflare.com/careers
+    priority: 1
+    category: infrastructure
+
+  - name: MongoDB
+    careers_url: https://www.mongodb.com/careers
+    priority: 1
+    category: infrastructure
+
+  - name: Snowflake
+    careers_url: https://careers.snowflake.com
+    priority: 1
+    category: infrastructure
+
+  - name: Databricks
+    careers_url: https://www.databricks.com/company/careers
+    priority: 1
+    category: infrastructure
+
+  - name: Elastic
+    careers_url: https://www.elastic.co/careers
+    priority: 2
+    category: infrastructure
+
+  # AI/ML
+  - name: OpenAI
+    careers_url: https://openai.com/careers
+    priority: 1
+    category: ai_ml
+
+  - name: Anthropic
+    careers_url: https://www.anthropic.com/careers
+    priority: 1
+    category: ai_ml
+
+  - name: Hugging Face
+    careers_url: https://huggingface.co/jobs
+    priority: 1
+    category: ai_ml
+
+  - name: Scale AI
+    careers_url: https://scale.com/careers
+    priority: 1
+    category: ai_ml
+
+  - name: Cohere
+    careers_url: https://cohere.com/careers
+    priority: 2
+    category: ai_ml
+
+  # E-commerce/Marketplace
+  - name: Shopify
+    careers_url: https://www.shopify.com/careers
+    priority: 1
+    category: ecommerce
+
+  - name: Etsy
+    careers_url: https://careers.etsy.com
+    priority: 2
+    category: ecommerce
+
+  - name: DoorDash
+    careers_url: https://careers.doordash.com
+    priority: 1
+    category: ecommerce
+
+  - name: Instacart
+    careers_url: https://instacart.careers
+    priority: 1
+    category: ecommerce
+
+  # Security
+  - name: CrowdStrike
+    careers_url: https://www.crowdstrike.com/careers
+    priority: 1
+    category: security
+
+  - name: Palo Alto Networks
+    careers_url: https://jobs.paloaltonetworks.com
+    priority: 1
+    category: security
+
+  - name: Okta
+    careers_url: https://www.okta.com/company/careers
+    priority: 1
+    category: security
+
+  - name: 1Password
+    careers_url: https://1password.com/careers
+    priority: 2
+    category: security

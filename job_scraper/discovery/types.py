@@ -25,6 +25,7 @@ class ATSType(str, Enum):
     SMARTRECRUITERS = "smartrecruiters"
     WORKDAY = "workday"
     ICIMS = "icims"
+    WORKABLE = "workable"
     TALEO = "taleo"
     CUSTOM = "custom"
     UNKNOWN = "unknown"
@@ -37,14 +38,15 @@ class ATSType(str, Enum):
             ATSType.LEVER,
             ATSType.ASHBY,
             ATSType.SMARTRECRUITERS,
+            ATSType.WORKDAY,
+            ATSType.ICIMS,
+            ATSType.WORKABLE,
         }
 
     @property
     def is_deferred(self) -> bool:
         """Check if this ATS type is deferred (no adapter yet)."""
         return self in {
-            ATSType.WORKDAY,
-            ATSType.ICIMS,
             ATSType.TALEO,
         }
 

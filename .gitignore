@@ -41,3 +41,12 @@ tasks/
 
 # Windows reserved device name accidentally created by tooling
 nul
+
+# Generated seed data (regenerate with: python scripts/build_seed.py --all)
+data/greenhouse_tokens.csv
+data/lever_tokens.csv
+data/ashby_tokens.csv
+data/workday_tenants.csv
+data/yc_companies.csv
+data/seed_config.yaml
+data/workday_sites.yaml

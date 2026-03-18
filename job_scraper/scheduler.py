@@ -71,17 +71,35 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
-    # Custom site scraper - runs every 15 minutes if enabled
+    # Custom site scraper - runs once daily if enabled
     if os.getenv("JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER", "false").lower() == "true":
+        custom_hour = int(os.getenv("JOB_SCRAPER_CUSTOM_SCRAPER_HOUR", "4"))
+        custom_minute = int(os.getenv("JOB_SCRAPER_CUSTOM_SCRAPER_MINUTE", "0"))
         scheduler.add_job(
             run_scrape_ingest,
-            "interval",
-            minutes=15,
+            "cron",
+            hour=custom_hour,
+            minute=custom_minute,
             id="scrape_custom_sites",
             max_instances=1,
             misfire_grace_time=300,
         )
-        logger.info("Custom site scraper enabled (every 15 min)")
+        logger.info("Custom site scraper enabled (daily at %02d:%02d UTC)", custom_hour, custom_minute)
+
+    # Bi-weekly seed refresh - runs at 03:00 UTC on the 1st and 15th of each month
+    if os.getenv("JOB_SCRAPER_ENABLE_SEED_REFRESH", "false").lower() == "true":
+        from .seed_refresh import run_seed_refresh  # lazy — groq optional dep
+        scheduler.add_job(
+            run_seed_refresh,
+            "cron",
+            day="1,15",
+            hour=3,
+            minute=0,
+            id="seed_refresh",
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        logger.info("Seed refresh enabled (1st and 15th of each month at 03:00 UTC)")
 
     scheduler.start()
 

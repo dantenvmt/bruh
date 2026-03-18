@@ -1,37 +1,38 @@
 """
 LLM-based parser for extracting job listings from HTML.
 
-Primary provider: Groq (llama-3.1-8b-instant) — fast, generous free tier.
+Primary provider: Groq (llama-3.1-8b-instant) -- fast, generous free tier.
 Fallback provider: HuggingFace Inference API (Qwen/Qwen2.5-7B-Instruct).
 
 HTML is preprocessed with BeautifulSoup before sending to the LLM:
-  - Strips <script>, <style>, <nav>, <footer>, <header>, <noscript>, <svg>
-  - Converts to plain text with a ~12 000 char limit (~3 000 tokens)
+  - Strips <script>, <style>, <noscript>, <svg>
+  - Converts links to [text](href) markdown so the LLM can see URLs
+  - Truncates to a configurable char limit (default 50 000 chars)
 
-URL hallucination guard: every URL returned by the LLM must appear verbatim
-in the original HTML source; any invented URL is silently dropped.
+URL hallucination guard: every URL returned by the LLM must have its path
+appear in the original HTML source; any invented URL is silently dropped.
 """
+import dataclasses
 import json
 import logging
-import os
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .css import _is_valid_job, _dedupe_jobs
 from ..types import RawScrapedJob
 
 logger = logging.getLogger(__name__)
 
-# Module-level config read once at import time.
-_GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-_HF_API_KEY: Optional[str] = os.getenv("HF_API_KEY")
-_GROQ_MODEL: str = os.getenv("LLM_PARSER_GROQ_MODEL", "llama-3.1-8b-instant")
-_HF_MODEL: str = os.getenv("LLM_PARSER_HF_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+_DEFAULT_MAX_HTML_CHARS = 50_000
+_DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
+_DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+_DEFAULT_TIMEOUT_SECONDS = 30
 
-_MAX_HTML_CHARS = 12_000  # ~3 000 tokens — fits all 7B model context windows
+# Tags that are pure noise -- safe to remove entirely.
+_NOISE_TAGS = ["script", "style", "noscript", "svg", "img"]
 
 
 class LLMParseError(Exception):
@@ -43,14 +44,34 @@ class LLMParseError(Exception):
 # HTML preprocessing
 # ---------------------------------------------------------------------------
 
-def _preprocess_html(html: str) -> str:
-    """Strip noise tags, collapse whitespace, truncate to token budget."""
+def _preprocess_html(html: str, max_chars: int = _DEFAULT_MAX_HTML_CHARS) -> str:
+    """Clean HTML and convert to a compact text representation that preserves link URLs.
+
+    Links are rendered as ``[text](href)`` so the LLM can extract real URLs.
+    Other noise (scripts, styles, SVGs) is stripped.
+    """
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup.find_all(["script", "style", "nav", "footer", "header", "noscript", "svg", "img"]):
+
+    for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
+
+    # Convert <a> tags to markdown-style links *before* extracting text,
+    # so the LLM receives real URLs from the page.
+    for a_tag in soup.find_all("a"):
+        if not isinstance(a_tag, Tag):
+            continue
+        href = a_tag.get("href", "")
+        text = a_tag.get_text(strip=True)
+        if href and text:
+            a_tag.replace_with(f"[{text}]({href})")
+        elif href:
+            a_tag.replace_with(f"({href})")
+        else:
+            a_tag.replace_with(text or "")
+
     text = soup.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text[:_MAX_HTML_CHARS]
+    return text[:max_chars]
 
 
 # ---------------------------------------------------------------------------
@@ -59,16 +80,16 @@ def _preprocess_html(html: str) -> str:
 
 _SYSTEM_PROMPT = (
     "You are a precise data extractor. "
-    "Extract job listings from careers page text. "
-    "Return ONLY a valid JSON array — no markdown, no explanation. "
+    "Extract job listings from the careers page content below. "
+    "Return ONLY a valid JSON array -- no markdown fences, no explanation. "
     'Each element: {"title": string, "url": string, "location": string|null}. '
-    "Only include real job postings. Never invent URLs."
+    "Use the exact URLs from the page content. Never invent or guess URLs."
 )
 
 
 def _build_user_prompt(text: str, base_url: str) -> str:
     return (
-        f"Base URL: {base_url}\n\n"
+        f"Base URL (use for resolving relative links): {base_url}\n\n"
         f"Page content:\n{text}\n\n"
         "Return the JSON array of job listings now:"
     )
@@ -89,11 +110,10 @@ def _extract_json(raw: str) -> list:
 def _jobs_from_response(
     raw_response: str, base_url: str, original_html: str
 ) -> List[RawScrapedJob]:
-    """
-    Parse LLM response text into validated RawScrapedJob objects.
+    """Parse LLM response text into validated RawScrapedJob objects.
 
     Applies two guards:
-    - URL hallucination guard: path segment must appear in original HTML.
+    - URL hallucination guard: URL path must appear in original HTML.
     - Reuses css._is_valid_job() for title/URL quality filtering.
     """
     try:
@@ -123,7 +143,8 @@ def _jobs_from_response(
 
         # Hallucination guard: URL path must appear somewhere in original HTML
         parsed_url = urlparse(url)
-        if parsed_url.path and parsed_url.path not in original_html and url not in original_html:
+        path = parsed_url.path
+        if path and path != "/" and path not in original_html and url not in original_html:
             logger.debug("LLM hallucinated URL, dropping: %s", url)
             continue
 
@@ -138,11 +159,16 @@ def _jobs_from_response(
 # Provider implementations
 # ---------------------------------------------------------------------------
 
-async def _call_groq(text: str, base_url: str) -> str:
-    from groq import AsyncGroq
-    client = AsyncGroq(api_key=_GROQ_API_KEY)
+async def _call_groq(
+    text: str, base_url: str, *, api_key: str, model: str, timeout: float
+) -> str:
+    try:
+        from groq import AsyncGroq
+    except ImportError:
+        raise LLMParseError("groq package is not installed (pip install groq)")
+    client = AsyncGroq(api_key=api_key, timeout=timeout)
     response = await client.chat.completions.create(
-        model=_GROQ_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_user_prompt(text, base_url)},
@@ -153,9 +179,16 @@ async def _call_groq(text: str, base_url: str) -> str:
     return response.choices[0].message.content
 
 
-async def _call_hf(text: str, base_url: str) -> str:
-    from huggingface_hub import AsyncInferenceClient
-    client = AsyncInferenceClient(model=_HF_MODEL, token=_HF_API_KEY)
+async def _call_hf(
+    text: str, base_url: str, *, api_key: str, model: str, timeout: float
+) -> str:
+    try:
+        from huggingface_hub import AsyncInferenceClient
+    except ImportError:
+        raise LLMParseError(
+            "huggingface_hub package is not installed (pip install huggingface_hub)"
+        )
+    client = AsyncInferenceClient(model=model, token=api_key, timeout=timeout)
     response = await client.chat_completion(
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -171,38 +204,102 @@ async def _call_hf(text: str, base_url: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def parse_with_llm(html: str, base_url: str) -> List[RawScrapedJob]:
-    """
-    Extract job listings from HTML using an LLM.
+def _resolve_config(llm_config: Optional[Dict] = None) -> Dict:
+    """Build a resolved config dict, preferring the passed-in config over env vars."""
+    cfg = llm_config or {}
+    return {
+        "groq_api_key": cfg.get("groq_api_key") or None,
+        "hf_api_key": cfg.get("hf_api_key") or None,
+        "groq_model": cfg.get("groq_model") or _DEFAULT_GROQ_MODEL,
+        "hf_model": cfg.get("hf_model") or _DEFAULT_HF_MODEL,
+        "timeout": float(cfg.get("timeout", _DEFAULT_TIMEOUT_SECONDS)),
+        "max_html_chars": int(cfg.get("max_html_chars", _DEFAULT_MAX_HTML_CHARS)),
+    }
+
+
+_LLM_CACHE_TTL = 6 * 3600  # 6 hours
+
+
+async def parse_with_llm(
+    html: str,
+    base_url: str,
+    llm_config: Optional[Dict] = None,
+) -> List[RawScrapedJob]:
+    """Extract job listings from HTML using an LLM.
+
+    Args:
+        html: Raw HTML of the careers page.
+        base_url: The URL the HTML was fetched from.
+        llm_config: Optional dict with keys ``groq_api_key``, ``hf_api_key``,
+            ``groq_model``, ``hf_model``, ``timeout``, ``max_html_chars``.
+            Typically ``Config().llm_parser``.
 
     Provider waterfall:
-      1. Groq (if GROQ_API_KEY is set)
-      2. HuggingFace Inference API (if HF_API_KEY is set)
+      1. Groq  (if groq_api_key is set)
+      2. HuggingFace Inference API (if hf_api_key is set)
+
+    Results are cached in Redis (if available) for 6 hours.
 
     Raises LLMParseError if no provider is configured or all fail.
     """
-    if not _GROQ_API_KEY and not _HF_API_KEY:
-        raise LLMParseError("No LLM provider configured (set GROQ_API_KEY or HF_API_KEY)")
+    from ...cache import get_cache, set_cache, content_key
 
-    cleaned = _preprocess_html(html)
+    rc = _resolve_config(llm_config)
+    groq_key = rc["groq_api_key"]
+    hf_key = rc["hf_api_key"]
 
-    if _GROQ_API_KEY:
+    if not groq_key and not hf_key:
+        raise LLMParseError("No LLM provider configured (set groq_api_key or hf_api_key)")
+
+    cleaned = _preprocess_html(html, max_chars=rc["max_html_chars"])
+
+    # Check Redis cache before calling LLM
+    cache_k = content_key("llm", base_url, cleaned[:500])
+    cached = await get_cache(cache_k)
+    if cached is not None:
+        logger.debug("LLM cache hit for %s (%d jobs)", base_url, len(cached))
+        return [RawScrapedJob(**item) for item in cached]
+
+    last_error: Optional[Exception] = None
+
+    # --- Groq ---
+    if groq_key:
         try:
-            raw = await _call_groq(cleaned, base_url)
+            raw = await _call_groq(
+                cleaned, base_url,
+                api_key=groq_key, model=rc["groq_model"], timeout=rc["timeout"],
+            )
             jobs = _jobs_from_response(raw, base_url, html)
             if jobs:
                 logger.info("Groq extracted %d jobs from %s", len(jobs), base_url)
+                await set_cache(cache_k, [dataclasses.asdict(j) for j in jobs], _LLM_CACHE_TTL)
                 return jobs
-            logger.debug("Groq returned 0 valid jobs for %s, trying HF", base_url)
+            logger.debug("Groq returned 0 valid jobs for %s, trying next provider", base_url)
         except LLMParseError:
             raise
         except Exception as exc:
-            logger.warning("Groq call failed for %s: %s — trying HF", base_url, exc)
+            last_error = exc
+            logger.warning("Groq call failed for %s: %s", base_url, exc)
 
-    if _HF_API_KEY:
-        raw = await _call_hf(cleaned, base_url)
-        jobs = _jobs_from_response(raw, base_url, html)
-        logger.info("HF extracted %d jobs from %s", len(jobs), base_url)
-        return jobs
+    # --- HuggingFace ---
+    if hf_key:
+        try:
+            raw = await _call_hf(
+                cleaned, base_url,
+                api_key=hf_key, model=rc["hf_model"], timeout=rc["timeout"],
+            )
+            jobs = _jobs_from_response(raw, base_url, html)
+            if jobs:
+                logger.info("HF extracted %d jobs from %s", len(jobs), base_url)
+                await set_cache(cache_k, [dataclasses.asdict(j) for j in jobs], _LLM_CACHE_TTL)
+                return jobs
+            logger.debug("HF returned 0 valid jobs for %s", base_url)
+        except LLMParseError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            logger.warning("HF call failed for %s: %s", base_url, exc)
 
-    raise LLMParseError("All LLM providers failed")
+    if last_error:
+        raise LLMParseError(f"All LLM providers failed: {last_error}") from last_error
+    raise LLMParseError("All LLM providers returned 0 valid jobs")

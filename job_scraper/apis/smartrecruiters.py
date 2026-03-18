@@ -32,7 +32,7 @@ class SmartRecruitersAPI(BaseJobAPI):
     def __init__(
         self,
         companies: Optional[List[str]] = None,
-        include_content: bool = False,
+        include_content: bool = True,
         requests_per_minute: int = 60,
     ):
         super().__init__(name="SmartRecruiters")
@@ -80,7 +80,17 @@ class SmartRecruitersAPI(BaseJobAPI):
 
         page_size = 100
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        _headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers) as client:
             for company in self.companies:
                 start_time = time.monotonic()
                 company_jobs: List[TrackedJob] = []

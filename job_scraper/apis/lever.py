@@ -21,9 +21,10 @@ class LeverAPI(BaseJobAPI):
 
     BASE_URL = "https://api.lever.co/v0/postings"
 
-    def __init__(self, sites: Optional[List[str]] = None):
+    def __init__(self, sites: Optional[List[str]] = None, concurrency: int = 20):
         super().__init__(name="Lever")
         self.sites = [s.strip() for s in (sites or []) if s and str(s).strip()]
+        self.concurrency = max(1, int(concurrency or 20))
 
     def is_configured(self) -> bool:
         return bool(self.sites)
@@ -45,18 +46,17 @@ class LeverAPI(BaseJobAPI):
             logger.warning("Lever sites not configured, skipping")
             return [], []
 
-        jobs: List[TrackedJob] = []
-        board_results: List[BoardResult] = []
         params = {"mode": "json"}
-        backoff = ExponentialBackoff(base_seconds=2.0, max_seconds=300.0)
+        semaphore = asyncio.Semaphore(self.concurrency)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for site in self.sites:
+        async def fetch_site(site: str, client: httpx.AsyncClient) -> Tuple[str, List[TrackedJob], BoardResult]:
+            backoff = ExponentialBackoff(base_seconds=2.0, max_seconds=300.0)
+            async with semaphore:
                 start_time_ms = int(time.time() * 1000)
                 url = f"{self.BASE_URL}/{site}"
                 error_msg: Optional[str] = None
                 error_code: Optional[str] = None
-                jobs_fetched = 0
+                site_jobs: List[TrackedJob] = []
 
                 # Retry logic with exponential backoff for 429 responses
                 max_retries = 3
@@ -94,10 +94,7 @@ class LeverAPI(BaseJobAPI):
                                 continue
                             if location and job.location and location.lower() not in job.location.lower():
                                 continue
-                            jobs.append(TrackedJob(job=job, board_token=site))
-                            jobs_fetched += 1
-                            if len(jobs) >= max_results:
-                                break
+                            site_jobs.append(TrackedJob(job=job, board_token=site))
 
                         # Success - break retry loop
                         break
@@ -125,23 +122,44 @@ class LeverAPI(BaseJobAPI):
                         logger.error(f"Lever error for site '{site}': {exc}")
                         break
 
-                # Record result for this board
                 duration_ms = int(time.time() * 1000) - start_time_ms
-                board_results.append(
-                    BoardResult(
-                        source=self.name.lower(),
-                        board_token=site,
-                        jobs_fetched=jobs_fetched,
-                        error=error_msg,
-                        error_code=error_code,
-                        duration_ms=duration_ms,
-                    )
+                board_result = BoardResult(
+                    source=self.name.lower(),
+                    board_token=site,
+                    jobs_fetched=len(site_jobs),
+                    error=error_msg,
+                    error_code=error_code,
+                    duration_ms=duration_ms,
                 )
+                return site, site_jobs, board_result
 
-                # Stop if we've hit max_results across all sites
+        _headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers) as client:
+            raw_results: List[Tuple[str, List[TrackedJob], BoardResult]] = await asyncio.gather(
+                *[fetch_site(site, client) for site in self.sites]
+            )
+
+        # Sort by site name for deterministic ordering, then apply max_results
+        raw_results.sort(key=lambda t: t[0])
+
+        jobs: List[TrackedJob] = []
+        board_results: List[BoardResult] = []
+        for _site_name, site_jobs, board_result in raw_results:
+            board_results.append(board_result)
+            if len(jobs) < max_results:
+                remaining = max_results - len(jobs)
+                jobs.extend(site_jobs[:remaining])
                 if len(jobs) >= max_results:
                     logger.info(f"Lever reached max_results ({max_results}), stopping")
-                    break
 
         logger.info(f"Lever returned {len(jobs)} jobs from {len(self.sites)} sites")
         return jobs, board_results

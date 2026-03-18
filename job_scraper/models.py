@@ -46,6 +46,15 @@ class Job:
     # Raw source payload (best-effort)
     raw_payload: Optional[dict] = None
 
+    # Normalization output (populated by normalize.py)
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    seniority: Optional[str] = None
+    visa_sponsorship: Optional[bool] = None
+    ai_summary_card: Optional[str] = None
+    ai_summary_bullets: Optional[list] = None
+    normalized_at: Optional[str] = None
+
     def to_dict(self) -> dict:
         """Convert to dictionary"""
         return asdict(self)

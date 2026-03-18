@@ -7,7 +7,7 @@ using CSS selectors. Required for Phase A anti-slop gate.
 import pytest
 from pathlib import Path
 
-from job_scraper.scraping.parsers.css import parse, ParseError
+from job_scraper.scraping.parsers.css import parse, ParseError, _is_valid_job
 from job_scraper.scraping.types import RawScrapedJob
 
 
@@ -229,3 +229,24 @@ class TestCSSParser:
         assert hasattr(jobs[0], "url")
         assert hasattr(jobs[0], "location")
         assert hasattr(jobs[0], "company")
+
+    def test_is_valid_job_rejects_marketing_url(self):
+        job = RawScrapedJob(
+            title="Newsroom",
+            url="https://www.pfizer.com/newsroom",
+        )
+        assert not _is_valid_job(job, "https://www.pfizer.com/about/careers")
+
+    def test_is_valid_job_rejects_pdf_resource(self):
+        job = RawScrapedJob(
+            title="Policy",
+            url="https://www.apple.com/careers/pdf/EverifyPosterEnglish.pdf",
+        )
+        assert not _is_valid_job(job, "https://www.apple.com/careers/us")
+
+    def test_is_valid_job_accepts_ats_job_url(self):
+        job = RawScrapedJob(
+            title="Senior Engineer",
+            url="https://jobs.boeing.com/job/seattle/senior-engineer/185/92218283168",
+        )
+        assert _is_valid_job(job, "https://www.boeing.com/careers")

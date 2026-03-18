@@ -57,9 +57,10 @@ _POSITIVE_PATTERNS = [
 _NEGATIVE_PATTERNS = [
     re.compile(r"\b(no\s+visa\s+sponsorship|no\s+sponsorship)\b", re.IGNORECASE),
     re.compile(r"\b(does\s+not\s+sponsor|will\s+not\s+sponsor|cannot\s+sponsor|unable\s+to\s+sponsor)\b", re.IGNORECASE),
-    re.compile(r"\b(without\s+sponsorship)\b", re.IGNORECASE),
+    # "without sponsorship" only when paired with explicit refusal context
+    re.compile(r"\b(not\s+able\s+to\s+provide\s+sponsorship|sponsorship\s+(is\s+)?not\s+(available|offered|provided))\b", re.IGNORECASE),
     # Common phrasing: "must be authorized to work in the US without sponsorship"
-    re.compile(r"\b(authori[sz]ed\s+to\s+work\s+in\s+the\s+u\.?s\.?\s+without\s+sponsorship)\b", re.IGNORECASE),
+    re.compile(r"\b(authori[sz]ed\s+to\s+work\s+in\s+the\s+u\.?s\.?\s+without\s+(visa\s+)?sponsorship)\b", re.IGNORECASE),
 ]
 
 

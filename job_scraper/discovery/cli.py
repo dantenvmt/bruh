@@ -873,7 +873,7 @@ def export_ats(
         ...,
         "--ats",
         "-a",
-        help="ATS type to export: greenhouse, lever, ashby, smartrecruiters",
+        help="ATS type to export: greenhouse, lever, ashby, smartrecruiters, workday",
     ),
     output: Path = typer.Option(
         None,
@@ -888,7 +888,7 @@ def export_ats(
     Exports sites that were detected as using a supported ATS platform.
     """
     # Validate ATS type
-    valid_ats = {"greenhouse", "lever", "ashby", "smartrecruiters"}
+    valid_ats = {"greenhouse", "lever", "ashby", "smartrecruiters", "workday"}
     ats_lower = ats.lower()
     if ats_lower not in valid_ats:
         console.print(f"[red]Invalid ATS: {ats}. Use: {', '.join(valid_ats)}[/red]")
@@ -910,7 +910,18 @@ def export_ats(
             console.print(f"[yellow]No {ats} sites found[/yellow]")
             return
 
-        # Extract tokens from URLs
+        if ats_lower == "workday":
+            from .workday_export import export_workday_sites_to_yaml
+
+            urls = [s.careers_url for s in sites if s.careers_url]
+            result = export_workday_sites_to_yaml(urls, output, timeout=15.0, validate=True)
+            console.print(
+                f"[green]Exported {result.get('exported', 0)} workday sites to {output}[/green]"
+            )
+            console.print("[dim]To use: set JOB_SCRAPER_CONFIG_INCLUDES to include this file[/dim]")
+            return
+
+        # Extract ATS tokens from URLs
         from .probe import extract_ats_token
         tokens = []
         for site in sites:

@@ -1,7 +1,7 @@
 """Enable RLS on new analytics/saved-job tables for Supabase.
 
 Revision ID: 008_enable_rls_for_new_tables
-Revises: 007_add_job_enrichment_and_user_analytics
+Revises: 007_job_enrichment
 Create Date: 2026-02-22
 """
 from alembic import op
@@ -10,7 +10,7 @@ import os
 
 
 revision = "008_enable_rls_for_new_tables"
-down_revision = "007_add_job_enrichment_and_user_analytics"
+down_revision = "007_job_enrichment"
 branch_labels = None
 depends_on = None
 

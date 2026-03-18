@@ -60,13 +60,15 @@ query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: Str
     def __init__(
         self,
         companies: Optional[List[str]] = None,
-        include_content: bool = False,
+        include_content: bool = True,
         requests_per_minute: int = 60,
+        concurrency: int = 10,
     ):
         super().__init__(name="Ashby")
         self.companies = [c.strip() for c in (companies or []) if c and str(c).strip()]
         self.include_content = bool(include_content)
         self.requests_per_minute = max(1, int(requests_per_minute or 60))
+        self.concurrency = max(1, int(concurrency or 10))
         self._rate_lock = asyncio.Lock()
         self._last_request_time = 0.0
 
@@ -104,12 +106,10 @@ query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: Str
 
         needle_query = (query or "").strip().lower()
         needle_location = (location or "").strip().lower()
+        semaphore = asyncio.Semaphore(self.concurrency)
 
-        all_jobs: List[TrackedJob] = []
-        board_results: List[BoardResult] = []
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for company in self.companies:
+        async def fetch_company(company: str, client: httpx.AsyncClient) -> Tuple[str, List[TrackedJob], BoardResult]:
+            async with semaphore:
                 started = time.monotonic()
                 jobs_fetched_raw = 0
                 board_jobs: List[TrackedJob] = []
@@ -130,9 +130,6 @@ query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: Str
                             continue
 
                         board_jobs.append(TrackedJob(job=job, board_token=company))
-                        all_jobs.append(board_jobs[-1])
-                        if len(all_jobs) >= max_results:
-                            break
 
                 except httpx.TimeoutException:
                     error_code = "timeout"
@@ -158,19 +155,45 @@ query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: Str
                     error_message = str(exc)
                     logger.error(f"Ashby unexpected error for '{company}': {exc}")
 
-                board_results.append(
-                    BoardResult(
-                        source=self.name.lower(),
-                        board_token=company,
-                        jobs_fetched=jobs_fetched_raw,
-                        error=error_message,
-                        error_code=error_code,
-                        duration_ms=int((time.monotonic() - started) * 1000),
-                    )
+                board_result = BoardResult(
+                    source=self.name.lower(),
+                    board_token=company,
+                    jobs_fetched=jobs_fetched_raw,
+                    error=error_message,
+                    error_code=error_code,
+                    duration_ms=int((time.monotonic() - started) * 1000),
                 )
+                return company, board_jobs, board_result
 
+        _headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Origin": "https://jobs.ashbyhq.com",
+            "Referer": "https://jobs.ashbyhq.com/",
+        }
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers) as client:
+            raw_results: List[Tuple[str, List[TrackedJob], BoardResult]] = await asyncio.gather(
+                *[fetch_company(company, client) for company in self.companies]
+            )
+
+        # Sort by company name for deterministic ordering, then apply max_results
+        raw_results.sort(key=lambda t: t[0])
+
+        all_jobs: List[TrackedJob] = []
+        board_results: List[BoardResult] = []
+        for _company_name, board_jobs, board_result in raw_results:
+            board_results.append(board_result)
+            if len(all_jobs) < max_results:
+                remaining = max_results - len(all_jobs)
+                all_jobs.extend(board_jobs[:remaining])
                 if len(all_jobs) >= max_results:
-                    break
+                    logger.info(f"Ashby reached max_results ({max_results}), stopping")
 
         logger.info(f"Ashby returned {len(all_jobs)} jobs from {len(board_results)} companies")
         return all_jobs, board_results

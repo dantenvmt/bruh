@@ -1,4 +1,13 @@
 services:
+  # Redis — optional cache + rate-limiter persistence (graceful degradation if absent)
+  redis:
+    image: redis:7-alpine
+    container_name: job_aggregator_redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
   # PostgreSQL Database
   db:
     image: postgres:15-alpine
@@ -52,7 +61,7 @@ services:
       JOB_SCRAPER_SECRETS_FILE: /app/secrets.json
 
       # Optional: comma-separated list of extra YAML config files (e.g. discovered ATS targets)
-      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-}
+      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-/app/data/workday_sites.yaml}
 
       # Database
       JOB_SCRAPER_DB_DSN: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
@@ -69,6 +78,10 @@ services:
       BUILTIN_MAX_PAGES: ${BUILTIN_MAX_PAGES:-5}
       BUILTIN_REQUESTS_PER_MINUTE: ${BUILTIN_REQUESTS_PER_MINUTE:-60}
 
+      # Workday
+      WORKDAY_SITES: ${WORKDAY_SITES:-}
+      WORKDAY_REQUESTS_PER_MINUTE: ${WORKDAY_REQUESTS_PER_MINUTE:-30}
+
       # API settings
       JOB_SCRAPER_CORS_ORIGINS: ${JOB_SCRAPER_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       JOB_SCRAPER_RATE_LIMIT: ${JOB_SCRAPER_RATE_LIMIT:-60/minute}
@@ -79,6 +92,8 @@ services:
       JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     command: uvicorn job_scraper.api.app:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -105,7 +120,7 @@ services:
       JOB_SCRAPER_SECRETS_FILE: /app/secrets.json
 
       # Optional: comma-separated list of extra YAML config files (e.g. discovered ATS targets)
-      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-}
+      JOB_SCRAPER_CONFIG_INCLUDES: ${JOB_SCRAPER_CONFIG_INCLUDES:-/app/data/workday_sites.yaml}
 
       # Database
       JOB_SCRAPER_DB_DSN: ${JOB_SCRAPER_DB_DSN:-postgresql+psycopg://${POSTGRES_USER:-jobscraper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-jobscraper}}
@@ -119,8 +134,15 @@ services:
       # Keep Ashby separate from main scheduler by default
       JOB_SCRAPER_SCHEDULE_EXCLUDE_SOURCES: ${JOB_SCRAPER_SCHEDULE_EXCLUDE_SOURCES:-ashby}
 
-      # Custom site scraper (every 15 min if enabled)
-      JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER: ${JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER:-false}
+      # Workday
+      WORKDAY_SITES: ${WORKDAY_SITES:-}
+      WORKDAY_REQUESTS_PER_MINUTE: ${WORKDAY_REQUESTS_PER_MINUTE:-30}
+
+      # Custom site scraper (every 15 min)
+      JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER: ${JOB_SCRAPER_ENABLE_CUSTOM_SCRAPER:-true}
+
+      # Seed refresh (bi-weekly: 1st and 15th of each month at 03:00 UTC)
+      JOB_SCRAPER_ENABLE_SEED_REFRESH: ${JOB_SCRAPER_ENABLE_SEED_REFRESH:-false}
 
       # Tier-1 sources
       WEWORKREMOTELY_BASE_URL: ${WEWORKREMOTELY_BASE_URL:-https://weworkremotely.com/remote-jobs.rss}
@@ -132,6 +154,8 @@ services:
       JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     command: python -m job_scraper.scheduler
 
   # Dedicated Ashby scheduler (runs separate batch windows)
@@ -187,6 +211,8 @@ services:
       JOB_SCRAPER_VISA_TAGGING_ENABLED: ${JOB_SCRAPER_VISA_TAGGING_ENABLED:-true}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES:-}
       JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE: ${JOB_SCRAPER_VISA_SPONSOR_COMPANIES_FILE:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     command: python -m job_scraper.scheduler_ashby
 
 volumes:

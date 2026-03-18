@@ -470,8 +470,20 @@ class TestATSTypeProperties:
     def test_lever_has_adapter(self):
         assert ATSType.LEVER.has_existing_adapter is True
 
-    def test_workday_is_deferred(self):
-        assert ATSType.WORKDAY.is_deferred is True
+    def test_workday_has_adapter(self):
+        assert ATSType.WORKDAY.has_existing_adapter is True
+        assert ATSType.WORKDAY.is_deferred is False
+
+    def test_icims_has_adapter(self):
+        assert ATSType.ICIMS.has_existing_adapter is True
+        assert ATSType.ICIMS.is_deferred is False
+
+    def test_workable_has_adapter(self):
+        assert ATSType.WORKABLE.has_existing_adapter is True
+        assert ATSType.WORKABLE.is_deferred is False
+
+    def test_taleo_is_deferred(self):
+        assert ATSType.TALEO.is_deferred is True
 
     def test_custom_no_adapter(self):
         assert ATSType.CUSTOM.has_existing_adapter is False

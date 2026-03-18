@@ -14,34 +14,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Enable the extension inside a normal transaction — idempotent.
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-
-    # CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
-    # We drop down to the raw DBAPI connection and set autocommit.
-    connection = op.get_bind()
-    raw_conn = connection.connection
-
-    # psycopg2 exposes autocommit as a simple attribute.
-    prev_autocommit = getattr(raw_conn, "autocommit", False)
-    try:
-        raw_conn.autocommit = True
-        cur = raw_conn.cursor()
-        cur.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_title_trgm "
-            "ON jobs USING GIN (title gin_trgm_ops)"
-        )
-        cur.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_company_trgm "
-            "ON jobs USING GIN (company gin_trgm_ops)"
-        )
-        cur.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_description_trgm "
-            "ON jobs USING GIN (description gin_trgm_ops)"
-        )
-        cur.close()
-    finally:
-        raw_conn.autocommit = prev_autocommit
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_title_trgm "
+        "ON jobs USING GIN (title gin_trgm_ops)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_company_trgm "
+        "ON jobs USING GIN (company gin_trgm_ops)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_description_trgm "
+        "ON jobs USING GIN (description gin_trgm_ops)"
+    )
 
 
 def downgrade() -> None:

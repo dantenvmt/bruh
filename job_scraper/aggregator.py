@@ -24,6 +24,8 @@ from .apis.findwork import FindworkAPI
 from .apis.hn_rss import HNRSSAPI
 from .apis.weworkremotely import WeWorkRemotelyAPI
 from .apis.builtin import BuiltInAPI
+from .apis.apify import ApifyAPI
+from .apis.workday import WorkdayAPI
 # Note: Arbeitnow removed - Europe-focused, excluded per US-only scope
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,8 @@ class JobAggregator:
         "weworkremotely",
         "builtin",
         "ashby",
+        "apify",
+        "workday",
         # Note: arbeitnow removed - Europe-focused, excluded per US-only scope
     ]
 
@@ -134,6 +138,21 @@ class JobAggregator:
                 domains=self.config.builtin.get("domains"),
                 max_pages=self.config.builtin.get("max_pages", 5),
                 requests_per_minute=self.config.builtin.get("requests_per_minute", 60),
+            ),
+            "apify": ApifyAPI(
+                api_token=self.config.apify.get("api_token"),
+                actor_ids=self.config.apify.get("actor_ids"),
+                actors=self.config.apify.get("actors"),
+                max_items=self.config.apify.get("max_items", 200),
+                country=self.config.apify.get("country", "US"),
+            ),
+            "workday": WorkdayAPI(
+                sites=self.config.workday.get("sites"),
+                requests_per_minute=self.config.workday.get("requests_per_minute", 30),
+                include_details=self.config.workday.get("include_details", False),
+                max_details_per_site=self.config.workday.get("max_details_per_site", 50),
+                detail_concurrency=self.config.workday.get("detail_concurrency", 3),
+                detail_timeout=self.config.workday.get("detail_timeout", 10.0),
             ),
         }
 

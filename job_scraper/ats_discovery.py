@@ -43,6 +43,14 @@ _ATS_PATTERNS: Dict[str, List[re.Pattern]] = {
     "ashby": [
         re.compile(r"jobs\\.ashbyhq\\.com/([a-z0-9_-]+)", re.IGNORECASE),
     ],
+    "workday": [
+        # Workday URLs are extracted structurally via parse_workday_url().
+        # This regex is used as a fast pre-filter to detect Workday URLs in HTML.
+        re.compile(
+            r"(https?://[^\"'\s]+\.myworkdayjobs\.com/[^\"'\s]+)",
+            re.IGNORECASE,
+        ),
+    ],
 }
 
 
@@ -55,6 +63,13 @@ def extract_ats_tokens(html_text: str, platforms: Set[str]) -> Dict[str, Set[str
     if not html_text:
         return found
     for platform in platforms:
+        if platform == "workday":
+            # Workday uses structured URL parsing instead of simple token extraction
+            found_workday = _extract_workday_sites(html_text)
+            if found_workday:
+                found["workday"] = found_workday
+            continue
+
         patterns = _ATS_PATTERNS.get(platform) or []
         for pat in patterns:
             for match in pat.findall(html_text):
@@ -63,6 +78,42 @@ def extract_ats_tokens(html_text: str, platforms: Set[str]) -> Dict[str, Set[str
                     continue
                 found.setdefault(platform, set()).add(token)
     return found
+
+
+def _extract_workday_sites(html_text: str) -> Set[str]:
+    """Extract canonical Workday site identifiers from HTML.
+
+    Uses parse_workday_url() for structured extraction.  Returns a set of
+    JSON-encoded ``{host, tenant, site}`` strings (we use JSON so the set
+    can dedupe; callers unpack later).
+    """
+    import json as _json
+    from .apis.workday import parse_workday_url
+
+    seen: Set[Tuple[str, str, str]] = set()
+    results: Set[str] = set()
+
+    # Fast pre-filter: find all myworkdayjobs.com URLs in the HTML
+    url_pattern = _ATS_PATTERNS.get("workday", [])
+    for pat in url_pattern:
+        for raw_url in pat.findall(html_text):
+            site_obj = parse_workday_url(raw_url)
+            if not site_obj:
+                continue
+            # Host safety: reject non-myworkdayjobs.com
+            if not site_obj.host.endswith(".myworkdayjobs.com"):
+                continue
+            key = (site_obj.host.lower(), site_obj.tenant.lower(), site_obj.site.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            # Encode as JSON string for set storage
+            results.add(_json.dumps({
+                "host": site_obj.host.lower(),
+                "tenant": site_obj.tenant,
+                "site": site_obj.site,
+            }, sort_keys=True))
+    return results
 
 
 def _extract_candidate_links(html_text: str, base_url: str, limit: int = 3) -> List[str]:
@@ -314,6 +365,8 @@ async def validate_token(
         url = f"https://api.lever.co/v0/postings/{token}?mode=json"
     elif platform == "smartrecruiters":
         url = f"https://api.smartrecruiters.com/v1/companies/{token}/postings"
+    elif platform == "workday":
+        return await _validate_workday_token(client, token, limiter)
     else:
         logger.warning(f"Unknown platform for validation: {platform}")
         return (False, 0)
@@ -359,6 +412,62 @@ async def validate_token(
         return (False, 0)
     except Exception as e:
         logger.warning(f"Token validation unexpected error: {platform}/{token} - {e}")
+        return (False, 0)
+
+
+async def _validate_workday_token(
+    client: httpx.AsyncClient,
+    token_json: str,
+    limiter: _RateLimiter,
+) -> Tuple[bool, int]:
+    """Validate a Workday site via CXS POST with limit=1."""
+    import json as _json
+
+    await limiter.wait()
+
+    try:
+        site = _json.loads(token_json)
+    except (ValueError, TypeError):
+        return (False, 0)
+
+    host = site.get("host", "")
+    tenant = site.get("tenant", "")
+    site_name = site.get("site", "")
+    if not host or not tenant or not site_name:
+        return (False, 0)
+
+    url = f"https://{host}/wday/cxs/{tenant}/{site_name}/jobs"
+    body = {"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""}
+
+    try:
+        resp = await client.post(
+            url,
+            json=body,
+            timeout=15.0,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        if resp.status_code == 422:
+            logger.debug(f"Workday validation failed: {tenant}/{site_name} — 422 invalid site")
+            return (False, 0)
+        if resp.status_code != 200:
+            logger.debug(f"Workday validation failed: {tenant}/{site_name} — HTTP {resp.status_code}")
+            return (False, 0)
+
+        data = resp.json() if resp.content else {}
+        total = data.get("total", 0)
+        is_valid = total > 0
+        if is_valid:
+            logger.debug(f"Workday validated: {tenant}/{site_name} -> {total} jobs")
+        return (is_valid, total)
+
+    except httpx.TimeoutException:
+        logger.debug(f"Workday validation timeout: {tenant}/{site_name}")
+        return (False, 0)
+    except Exception as e:
+        logger.debug(f"Workday validation error: {tenant}/{site_name} — {e}")
         return (False, 0)
 
 

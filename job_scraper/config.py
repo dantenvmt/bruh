@@ -50,6 +50,72 @@ def _to_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _clamp_int(value, *, default: int, minimum: int, name: str = "") -> int:
+    """Parse an int and clamp to *minimum*; warn + use *default* on bad input."""
+    v = _to_int(value, default)
+    if v < minimum:
+        logger.warning(
+            "%s=%s is below minimum %d — using default %d",
+            name or "config", value, minimum, default,
+        )
+        return default
+    return v
+
+
+def _clamp_float(value, *, default: float, minimum: float, name: str = "") -> float:
+    """Parse a float and clamp to *minimum*; warn + use *default* on bad input."""
+    v = _to_float(value, default)
+    if v < minimum:
+        logger.warning(
+            "%s=%s is below minimum %.1f — using default %.1f",
+            name or "config", value, minimum, default,
+        )
+        return default
+    return v
+
+
+def _parse_workday_sites(value) -> list:
+    """Parse WORKDAY_SITES from JSON string or list of dicts.
+
+    Each entry must have host, tenant, site.  Host must match
+    *.myworkdayjobs.com.  Dedupes by (host, tenant, site).
+    """
+    if value is None:
+        return []
+    raw = value
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("WORKDAY_SITES is not valid JSON")
+            return []
+    if not isinstance(raw, list):
+        return []
+
+    seen = set()
+    sites = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        host = (item.get("host") or "").strip().lower().rstrip("/")
+        tenant = (item.get("tenant") or "").strip()
+        site = (item.get("site") or "").strip()
+        if not host or not tenant or not site:
+            continue
+        if not host.endswith(".myworkdayjobs.com"):
+            logger.warning("Workday host %s rejected — must be *.myworkdayjobs.com", host)
+            continue
+        key = (host, tenant.lower(), site.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        sites.append({"host": host, "tenant": tenant, "site": site})
+    return sites
+
+
 def _deep_update(target: dict, updates: dict) -> dict:
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(target.get(key), dict):
@@ -141,6 +207,12 @@ class Config:
                 with open(self.config_file, "r") as f:
                     config = yaml.safe_load(f) or {}
 
+        # Secrets load before includes so that include files (e.g. seed_config.yaml)
+        # can override secrets. Priority: env vars > includes > secrets > config.yaml
+        secrets = _load_secret_overrides()
+        if secrets:
+            _deep_update(config, secrets)
+
         includes_raw = os.getenv("JOB_SCRAPER_CONFIG_INCLUDES") or os.getenv("JOB_SCRAPER_CONFIG_INCLUDE")
         for include_path in _to_list(includes_raw):
             try:
@@ -153,10 +225,6 @@ class Config:
                     _deep_update(config, include_config)
             except Exception:
                 logger.warning(f"Failed to load JOB_SCRAPER_CONFIG_INCLUDE file: {include_path}")
-
-        secrets = _load_secret_overrides()
-        if secrets:
-            _deep_update(config, secrets)
 
         # Override with environment variables
         config.setdefault("adzuna", {})
@@ -277,7 +345,7 @@ class Config:
 
         config.setdefault("greenhouse", {})
         config["greenhouse"]["boards"] = _to_list(
-            os.getenv("GREENHOUSE_BOARDS", config.get("greenhouse", {}).get("boards"))
+            os.getenv("GREENHOUSE_BOARDS") or config.get("greenhouse", {}).get("boards")
         )
         config["greenhouse"]["include_content"] = _to_bool(
             os.getenv("GREENHOUSE_INCLUDE_CONTENT", config.get("greenhouse", {}).get("include_content", True))
@@ -285,12 +353,12 @@ class Config:
 
         config.setdefault("lever", {})
         config["lever"]["sites"] = _to_list(
-            os.getenv("LEVER_SITES", config.get("lever", {}).get("sites"))
+            os.getenv("LEVER_SITES") or config.get("lever", {}).get("sites")
         )
 
         config.setdefault("smartrecruiters", {})
         config["smartrecruiters"]["companies"] = _to_list(
-            os.getenv("SMARTRECRUITERS_COMPANIES", config.get("smartrecruiters", {}).get("companies"))
+            os.getenv("SMARTRECRUITERS_COMPANIES") or config.get("smartrecruiters", {}).get("companies")
         )
         config["smartrecruiters"]["include_content"] = _to_bool(
             os.getenv(
@@ -308,7 +376,7 @@ class Config:
 
         config.setdefault("ashby", {})
         config["ashby"]["companies"] = _to_list(
-            os.getenv("ASHBY_COMPANIES", config.get("ashby", {}).get("companies"))
+            os.getenv("ASHBY_COMPANIES") or config.get("ashby", {}).get("companies")
         )
         config["ashby"]["include_content"] = _to_bool(
             os.getenv("ASHBY_INCLUDE_CONTENT", config.get("ashby", {}).get("include_content", False))
@@ -357,8 +425,78 @@ class Config:
             "HNRSS_BASE_URL", config.get("hnrss", {}).get("base_url", "https://hnrss.org/jobs")
         )
 
+        # Apify actor-based scraping (supports multiple actors)
+        config.setdefault("apify", {})
+        config["apify"]["api_token"] = os.getenv(
+            "APIFY_API_TOKEN", config.get("apify", {}).get("api_token")
+        )
+        # Comma-separated actor IDs via env var; structured list via config.yaml
+        config["apify"]["actor_ids"] = os.getenv(
+            "APIFY_ACTOR_IDS",
+            config.get("apify", {}).get(
+                "actor_ids",
+                "memo23/apify-indeed-cheerio-keywords-ppr,worldunboxer/rapid-linkedin-scraper,orgupdate/google-jobs-scraper",
+            ),
+        )
+        # Structured actor list from config.yaml (takes priority over actor_ids)
+        # Format: [{id: "actor/name", label: "short-name"}, ...]
+        config["apify"].setdefault("actors", config.get("apify", {}).get("actors"))
+        config["apify"]["max_items"] = _to_int(
+            os.getenv(
+                "APIFY_MAX_ITEMS",
+                config.get("apify", {}).get("max_items", 200),
+            ),
+            200,
+        )
+        config["apify"]["country"] = os.getenv(
+            "APIFY_COUNTRY", config.get("apify", {}).get("country", "US")
+        )
+
         # JobSpy doesn't need auth (it's a scraper)
         config.setdefault("jobspy", {})
+
+        # Workday
+        config.setdefault("workday", {})
+        workday_sites_raw = os.getenv("WORKDAY_SITES")
+        if isinstance(workday_sites_raw, str) and not workday_sites_raw.strip():
+            workday_sites_raw = None
+        config["workday"]["sites"] = _parse_workday_sites(
+            workday_sites_raw if workday_sites_raw is not None else config.get("workday", {}).get("sites")
+        )
+        config["workday"]["requests_per_minute"] = _to_int(
+            os.getenv(
+                "WORKDAY_REQUESTS_PER_MINUTE",
+                config.get("workday", {}).get("requests_per_minute", 30),
+            ),
+            30,
+        )
+        config["workday"]["include_details"] = _to_bool(
+            os.getenv(
+                "WORKDAY_INCLUDE_DETAILS",
+                config.get("workday", {}).get("include_details", False),
+            )
+        )
+        config["workday"]["max_details_per_site"] = _to_int(
+            os.getenv(
+                "WORKDAY_MAX_DETAILS_PER_SITE",
+                config.get("workday", {}).get("max_details_per_site", 50),
+            ),
+            50,
+        )
+        config["workday"]["detail_concurrency"] = _to_int(
+            os.getenv(
+                "WORKDAY_DETAIL_CONCURRENCY",
+                config.get("workday", {}).get("detail_concurrency", 3),
+            ),
+            3,
+        )
+        config["workday"]["detail_timeout"] = _to_float(
+            os.getenv(
+                "WORKDAY_DETAIL_TIMEOUT",
+                config.get("workday", {}).get("detail_timeout", 10.0),
+            ),
+            10.0,
+        )
 
         # DB + scheduler settings
         config.setdefault("db", {})
@@ -473,6 +611,46 @@ class Config:
         config["llm_parser"]["css_fallback"] = _to_bool(
             os.getenv("LLM_PARSER_CSS_FALLBACK", config.get("llm_parser", {}).get("css_fallback", True))
         )
+        config["llm_parser"]["vision_model"] = os.getenv(
+            "LLM_PARSER_VISION_MODEL",
+            config.get("llm_parser", {}).get("vision_model", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        )
+        config["llm_parser"]["vision_timeout"] = _to_float(
+            os.getenv(
+                "LLM_PARSER_VISION_TIMEOUT",
+                config.get("llm_parser", {}).get("vision_timeout", 45),
+            ),
+            45.0,
+        )
+
+        config.setdefault("detail_enrichment", {})
+        config["detail_enrichment"]["enabled"] = _to_bool(
+            os.getenv("DETAIL_ENRICHMENT_ENABLED", config.get("detail_enrichment", {}).get("enabled", True))
+        )
+        config["detail_enrichment"]["max_per_site"] = _clamp_int(
+            os.getenv("DETAIL_ENRICHMENT_MAX_PER_SITE", config.get("detail_enrichment", {}).get("max_per_site", 50)),
+            default=50, minimum=1, name="DETAIL_ENRICHMENT_MAX_PER_SITE",
+        )
+        config["detail_enrichment"]["concurrency"] = _clamp_int(
+            os.getenv("DETAIL_ENRICHMENT_CONCURRENCY", config.get("detail_enrichment", {}).get("concurrency", 5)),
+            default=5, minimum=1, name="DETAIL_ENRICHMENT_CONCURRENCY",
+        )
+        config["detail_enrichment"]["fetch_timeout"] = _clamp_float(
+            os.getenv("DETAIL_ENRICHMENT_FETCH_TIMEOUT", config.get("detail_enrichment", {}).get("fetch_timeout", 15.0)),
+            default=15.0, minimum=1.0, name="DETAIL_ENRICHMENT_FETCH_TIMEOUT",
+        )
+        config["detail_enrichment"]["max_seconds"] = _clamp_float(
+            os.getenv("DETAIL_ENRICHMENT_MAX_SECONDS", config.get("detail_enrichment", {}).get("max_seconds", 25.0)),
+            default=25.0, minimum=5.0, name="DETAIL_ENRICHMENT_MAX_SECONDS",
+        )
+        config["detail_enrichment"]["max_fetches"] = _clamp_int(
+            os.getenv("DETAIL_ENRICHMENT_MAX_FETCHES", config.get("detail_enrichment", {}).get("max_fetches", 30)),
+            default=30, minimum=1, name="DETAIL_ENRICHMENT_MAX_FETCHES",
+        )
+        config["detail_enrichment"]["max_llm_calls"] = _clamp_int(
+            os.getenv("DETAIL_ENRICHMENT_MAX_LLM_CALLS", config.get("detail_enrichment", {}).get("max_llm_calls", 10)),
+            default=10, minimum=0, name="DETAIL_ENRICHMENT_MAX_LLM_CALLS",
+        )
 
         config.setdefault("discovery", {})
         config["discovery"]["selector_min_confidence"] = _to_float(
@@ -561,8 +739,16 @@ class Config:
         return self._config.get("builtin", {})
 
     @property
+    def apify(self) -> dict:
+        return self._config.get("apify", {})
+
+    @property
     def hnrss(self) -> dict:
         return self._config.get("hnrss", {})
+
+    @property
+    def workday(self) -> dict:
+        return self._config.get("workday", {})
 
     @property
     def db_dsn(self) -> Optional[str]:
@@ -603,6 +789,10 @@ class Config:
     @property
     def llm_parser(self) -> dict:
         return self._config.get("llm_parser", {})
+
+    @property
+    def detail_enrichment(self) -> dict:
+        return self._config.get("detail_enrichment", {})
 
     @property
     def discovery(self) -> dict:

@@ -10,14 +10,15 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Tuple
 
+from sqlalchemy import func, or_
+
 from .config import Config
+from .enrichment import enrich_job
 from .models import Job
 from .discovery.selectors import selector_hints_ready_for_scrape
 from .scraping.models import ScrapeSite
-from .scraping.types import SiteResult, convert_to_job_models
-from .scraping.fetchers.static import fetch_static
-from .scraping.fetchers.browser import fetch_with_browser
-from .scraping.parsers.css import parse as parse_css, ParseError
+from .scraping.scraper import scrape_site
+from .scraping.types import SiteResult
 from .storage import (
     finish_run,
     get_session,
@@ -27,6 +28,8 @@ from .storage import (
     start_run,
     upsert_jobs,
 )
+from .summarize import summarize_new_jobs
+from .utils import _is_non_us_location, normalize_text
 from .visa import enrich_jobs_with_visa_tags
 
 logger = logging.getLogger(__name__)
@@ -74,9 +77,28 @@ def run_scrape_ingest(limit: int = 20, dry_run: bool = False) -> str:
                 unique_jobs.append(job)
         jobs = unique_jobs
 
-        # Enrich with visa tags before upserting
+        # Filter explicitly non-US jobs (lenient: keeps jobs with no/ambiguous location)
+        if cfg.us_only:
+            before = len(jobs)
+            jobs = [
+                j for j in jobs
+                if not j.location or not _is_non_us_location(normalize_text(j.location))
+            ]
+            filtered = before - len(jobs)
+            if filtered:
+                logger.info("US-only filter removed %d non-US jobs", filtered)
+
+        # Enrich with visa tags + deterministic fields before upserting
         jobs = enrich_jobs_with_visa_tags(jobs, cfg)
+        enrichment_version = int(cfg.enrichment.get("version", 1) or 1)
+        jobs = [enrich_job(job, enrichment_version=enrichment_version) for job in jobs]
         stored = upsert_jobs(cfg.db_dsn, run_id, jobs)
+
+        # Summarize newly ingested jobs that have descriptions
+        try:
+            summarize_new_jobs(cfg.db_dsn, jobs)
+        except Exception as exc:
+            logger.warning("Inline summarization failed: %s", exc)
 
         # Record per-site results in run_sources
         for result in site_results:
@@ -93,21 +115,20 @@ def run_scrape_ingest(limit: int = 20, dry_run: bool = False) -> str:
 
         # Calculate run status based on failure rate
         success_count = sum(1 for r in site_results if r.success)
-        failure_rate = (len(site_results) - success_count) / len(site_results) if site_results else 0
 
-        if failure_rate == 0:
+        if success_count == len(site_results):
             status = "success"
-        elif failure_rate >= 0.5:
+        elif success_count > 0:
             status = "partial"
         else:
-            status = "success"
+            status = "error"
 
         finish_run(cfg.db_dsn, run_id, stored, status=status)
         logger.info(f"Scraped {stored} jobs from {success_count}/{len(site_results)} sites")
 
     except Exception as exc:
         finish_run(cfg.db_dsn, run_id, 0, status="error")
-        raise exc
+        raise
 
     finally:
         purge_old_runs(cfg.db_dsn, cfg.retention_days)
@@ -122,11 +143,10 @@ async def _scrape_due_sites(cfg: Config, limit: int, dry_run: bool) -> Tuple[Lis
     Strict filters:
     - enabled=True
     - detected_ats='custom'
-    - robots_allowed=True
+    - robots_allowed=True or NULL (unprobed sites are allowed)
     - careers_url not null
-    - selector_hints present and validation gate passes
-    - selector_hints review_status approved (unless config disables requirement)
-    - next_scrape_at <= now()
+    - next_scrape_at <= now() or NULL (unscheduled sites scrape immediately)
+    - selector_hints validation gate (only when selector_hints present)
 
     Args:
         cfg: Application config
@@ -139,19 +159,19 @@ async def _scrape_due_sites(cfg: Config, limit: int, dry_run: bool) -> Tuple[Lis
     session = get_session(cfg.db_dsn)
 
     try:
+        now = datetime.utcnow()
         sites = (
             session.query(ScrapeSite)
             .filter(
                 ScrapeSite.enabled == True,
                 ScrapeSite.detected_ats == "custom",
-                ScrapeSite.robots_allowed == True,
+                or_(ScrapeSite.robots_allowed == True, ScrapeSite.robots_allowed == None),
                 ScrapeSite.careers_url != None,
-                ScrapeSite.selector_hints != None,
-                ScrapeSite.next_scrape_at <= datetime.utcnow(),
+                or_(ScrapeSite.next_scrape_at <= now, ScrapeSite.next_scrape_at == None),
             )
             .order_by(
                 ScrapeSite.priority.asc().nullslast(),
-                ScrapeSite.next_scrape_at.asc(),
+                ScrapeSite.next_scrape_at.asc().nullsfirst(),
             )
             .limit(limit)
             .all()
@@ -163,6 +183,11 @@ async def _scrape_due_sites(cfg: Config, limit: int, dry_run: bool) -> Tuple[Lis
     finally:
         session.close()
 
+    logger.info(
+        "Site query returned %d eligible sites (enabled=True, ats=custom, careers_url set, schedule due)",
+        len(sites),
+    )
+
     if not sites:
         return [], []
 
@@ -171,24 +196,33 @@ async def _scrape_due_sites(cfg: Config, limit: int, dry_run: bool) -> Tuple[Lis
     require_approved = bool(discovery_cfg.get("require_approved_selectors", True))
     ready_sites = []
     for site in sites:
-        ready, reason = selector_hints_ready_for_scrape(
-            site.selector_hints,
-            selector_confidence=site.selector_confidence,
-            min_confidence=min_confidence,
-            require_approved=require_approved,
-        )
-        if ready:
-            ready_sites.append(site)
-        else:
-            logger.info(
-                "Skipping %s (site_id=%s): selector gate failed (%s)",
-                site.company_name,
-                site.id,
-                reason,
+        # Sites without selector_hints can still be scraped by the cascade
+        # (JSON-LD, RSS, link-graph, LLM). Only gate on selector quality
+        # when the site actually has selectors that CSS parsing would use.
+        if site.selector_hints:
+            ready, reason = selector_hints_ready_for_scrape(
+                site.selector_hints,
+                selector_confidence=site.selector_confidence,
+                min_confidence=min_confidence,
+                require_approved=require_approved,
             )
+            if not ready:
+                logger.info(
+                    "Selector gate failed for %s (site_id=%s): %s — falling back to LLM cascade",
+                    site.company_name,
+                    site.id,
+                    reason,
+                )
+                site.selector_hints = None
+        ready_sites.append(site)
 
+    skipped = len(sites) - len(ready_sites)
+    if skipped:
+        logger.info("Selector gate filtered out %d/%d sites", skipped, len(sites))
     sites = ready_sites
     if not sites:
+        logger.info("All sites filtered out by selector gate (require_approved=%s, min_confidence=%.2f)",
+                     require_approved, min_confidence)
         return [], []
 
     if dry_run:
@@ -200,100 +234,63 @@ async def _scrape_due_sites(cfg: Config, limit: int, dry_run: bool) -> Tuple[Lis
     site_results = []
 
     for site in sites:
-        jobs, result = await scrape_site(site, cfg)
+        try:
+            jobs, result = await scrape_site(site, cfg)
+        except Exception as exc:
+            logger.error("Unhandled error scraping %s: %s", site.company_name, exc, exc_info=True)
+            jobs = []
+            result = SiteResult(
+                site_id=site.id, success=False, jobs_found=0,
+                error=f"unhandled: {exc}",
+            )
+
         all_jobs.extend(jobs)
         site_results.append(result)
 
-        # Update next_scrape_at immediately after each attempt
+        # Update site state after each attempt
         scrape_interval = getattr(site, "scrape_interval_hours", None) or 6
-        _update_site_next_scrape(cfg.db_dsn, site.id, hours=scrape_interval)
+        _update_site_after_scrape(cfg.db_dsn, site.id, result, hours=scrape_interval)
 
     return all_jobs, site_results
 
 
-async def scrape_site(site: ScrapeSite, cfg: Config) -> Tuple[List[Job], SiteResult]:
+def _update_site_after_scrape(dsn: str, site_id, result: SiteResult, hours: int = 6) -> None:
     """
-    Scrape a single site and return jobs + result metadata.
-
-    Args:
-        site: Site configuration to scrape
-        cfg: Application config
-
-    Returns:
-        Tuple of (jobs, site_result)
+    Update site state after a scrape attempt: schedule next run,
+    track consecutive failures, auto-disable broken sites, and
+    handle stale api_spy endpoints.
     """
-    logger.info(f"Scraping {site.company_name} at {site.careers_url}")
+    now = datetime.utcnow()
+    updates: dict = {
+        "next_scrape_at": now + timedelta(hours=hours),
+        "last_scraped_at": now,
+    }
 
-    try:
-        # Hybrid fetch strategy:
-        # 1) use configured mode first
-        # 2) optional fallback to the other mode when fetch/parse fails
-        fetch_mode = (getattr(site, "fetch_mode", "static") or "static").lower()
-        allow_fallback = bool(cfg.discovery.get("hybrid_browser_fallback", True))
-        mode_order = [fetch_mode]
-        if allow_fallback:
-            fallback_mode = "browser" if fetch_mode != "browser" else "static"
-            mode_order.append(fallback_mode)
+    if result.success:
+        updates["consecutive_failures"] = 0
+        updates["last_error_code"] = None
+        updates["last_error"] = None
+        updates["last_success_at"] = now
+    else:
+        updates["consecutive_failures"] = func.coalesce(ScrapeSite.consecutive_failures, 0) + 1
+        updates["last_error_code"] = (result.error or "unknown")[:32]
+        updates["last_error"] = result.error
 
-        raw_jobs = None
-        last_error = None
-        for mode in mode_order:
-            if mode == "browser":
-                html, error = await fetch_with_browser(site.careers_url)
-            else:
-                html, error = await fetch_static(site.careers_url)
+    # Stale api_spy endpoint — fall back to HTML scraping next run
+    if getattr(result, "needs_reprobe", False):
+        updates["fetch_mode"] = "static"
+        updates["api_endpoint"] = None
+        logger.info("Cleared stale api_spy endpoint for site_id=%s, falling back to static", site_id)
 
-            if error:
-                last_error = f"{mode}_fetch_error: {error}"
-                logger.warning("Failed to fetch %s (%s): %s", site.careers_url, mode, error)
-                continue
-
-            try:
-                raw_jobs = parse_css(html, site.selector_hints, site.careers_url)
-                if mode != fetch_mode:
-                    logger.info(
-                        "Fallback mode succeeded for %s (primary=%s, fallback=%s)",
-                        site.company_name,
-                        fetch_mode,
-                        mode,
-                    )
-                break
-            except ParseError as pe:
-                last_error = f"{mode}_parse_error: {pe}"
-                logger.warning("Parse error for %s (%s): %s", site.company_name, mode, pe)
-                continue
-
-        if raw_jobs is None:
-            return [], SiteResult(site.id, False, 0, last_error or "scrape_failed")
-
-        if not raw_jobs:
-            logger.info(f"No jobs found for {site.company_name}")
-            return [], SiteResult(site.id, True, 0)
-
-        # Convert to Job models
-        jobs = convert_to_job_models(raw_jobs, site)
-
-        logger.info(f"Scraped {len(jobs)} jobs from {site.company_name}")
-        return jobs, SiteResult(site.id, True, len(jobs))
-
-    except Exception as exc:
-        logger.error(f"Error scraping {site.company_name}: {exc}", exc_info=True)
-        return [], SiteResult(site.id, False, 0, str(exc))
-
-
-def _update_site_next_scrape(dsn: str, site_id, hours: int = 6) -> None:
-    """
-    Schedule next scrape time after an attempt.
-
-    Args:
-        dsn: Database connection string
-        site_id: Site UUID to update
-        hours: Hours until next scrape (default 6)
-    """
     with session_scope(dsn) as session:
-        session.query(ScrapeSite).filter(ScrapeSite.id == site_id).update(
-            {
-                "next_scrape_at": datetime.utcnow() + timedelta(hours=hours),
-                "last_scraped_at": datetime.utcnow(),
-            }
-        )
+        session.query(ScrapeSite).filter(ScrapeSite.id == site_id).update(updates)
+
+        # Auto-disable after too many consecutive failures
+        if not result.success:
+            site = session.query(ScrapeSite).filter(ScrapeSite.id == site_id).first()
+            if site and site.consecutive_failures >= (site.max_failures or 5):
+                session.query(ScrapeSite).filter(ScrapeSite.id == site_id).update({"enabled": False})
+                logger.warning(
+                    "Auto-disabled %s (site_id=%s) after %d consecutive failures",
+                    site.company_name, site_id, site.consecutive_failures,
+                )

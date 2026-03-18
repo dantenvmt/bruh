@@ -20,10 +20,11 @@ class GreenhouseAPI(BaseJobAPI):
 
     BASE_URL = "https://boards-api.greenhouse.io/v1/boards"
 
-    def __init__(self, boards: Optional[List[str]] = None, include_content: bool = True):
+    def __init__(self, boards: Optional[List[str]] = None, include_content: bool = True, concurrency: int = 20):
         super().__init__(name="Greenhouse")
         self.boards = [b.strip() for b in (boards or []) if b and str(b).strip()]
         self.include_content = include_content
+        self.concurrency = max(1, int(concurrency or 20))
 
     def is_configured(self) -> bool:
         return bool(self.boards)
@@ -46,13 +47,12 @@ class GreenhouseAPI(BaseJobAPI):
             logger.warning("Greenhouse boards not configured, skipping")
             return [], []
 
-        jobs: List[TrackedJob] = []
-        board_results: List[BoardResult] = []
         params = {"content": "true"} if self.include_content else None
-        backoff = ExponentialBackoff(base_seconds=2.0, max_seconds=60.0)
+        semaphore = asyncio.Semaphore(self.concurrency)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for board in self.boards:
+        async def fetch_board(board: str, client: httpx.AsyncClient) -> Tuple[str, List[TrackedJob], BoardResult]:
+            backoff = ExponentialBackoff(base_seconds=2.0, max_seconds=60.0)
+            async with semaphore:
                 start_time = time.time()
                 board_jobs: List[TrackedJob] = []
                 error_msg: Optional[str] = None
@@ -114,10 +114,6 @@ class GreenhouseAPI(BaseJobAPI):
 
                                 board_jobs.append(TrackedJob(job=job, board_token=board))
 
-                                # Check max_results across all boards
-                                if len(jobs) + len(board_jobs) >= max_results:
-                                    break
-
                         except Exception as e:
                             error_code = "parse_error"
                             error_msg = f"Failed to parse response: {str(e)}"
@@ -150,10 +146,6 @@ class GreenhouseAPI(BaseJobAPI):
                     error_code=error_code,
                     duration_ms=duration_ms,
                 )
-                board_results.append(board_result)
-
-                # Add successful jobs to total
-                jobs.extend(board_jobs)
 
                 # Log result
                 if error_msg:
@@ -161,10 +153,38 @@ class GreenhouseAPI(BaseJobAPI):
                 else:
                     logger.info(f"Board '{board}': fetched {len(board_jobs)} jobs (took {duration_ms}ms)")
 
-                # Check if we've hit max_results
+                return board, board_jobs, board_result
+
+        _headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
+        }
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers) as client:
+            raw_results: List[Tuple[str, List[TrackedJob], BoardResult]] = await asyncio.gather(
+                *[fetch_board(board, client) for board in self.boards]
+            )
+
+        # Sort by board name for deterministic ordering, then apply max_results
+        raw_results.sort(key=lambda t: t[0])
+
+        jobs: List[TrackedJob] = []
+        board_results: List[BoardResult] = []
+        for _board_name, board_jobs, board_result in raw_results:
+            board_results.append(board_result)
+            if len(jobs) < max_results:
+                remaining = max_results - len(jobs)
+                jobs.extend(board_jobs[:remaining])
                 if len(jobs) >= max_results:
                     logger.info(f"Reached max_results ({max_results}), stopping")
-                    break
 
         logger.info(f"Greenhouse returned {len(jobs)} jobs from {len(self.boards)} boards")
         return jobs, board_results

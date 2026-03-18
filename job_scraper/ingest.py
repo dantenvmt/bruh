@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from .aggregator import JobAggregator
 from .config import Config
-from .enrichment import enrich_job
+from .normalize import normalize_jobs_batch
 from .storage import (
     finish_run,
     purge_old_runs,
@@ -76,8 +76,7 @@ def run_ingest(
                 jobs_stored_map[lineage[dedupe_key]] += 1
 
         jobs = enrich_jobs_with_visa_tags(jobs, cfg)
-        enrichment_version = int(cfg.enrichment.get("version", 1) or 1)
-        jobs = [enrich_job(job, enrichment_version=enrichment_version) for job in jobs]
+        jobs = asyncio.run(normalize_jobs_batch(jobs, cfg.llm_parser.get("groq_api_key")))
         record_source_results_bulk(cfg.db_dsn, run_id, board_results, jobs_stored_map)
 
         error_count = sum(1 for result in board_results if result.error)
@@ -91,6 +90,7 @@ def run_ingest(
             status = "success"
 
         stored = upsert_jobs(cfg.db_dsn, run_id, jobs)
+
         finish_run(cfg.db_dsn, run_id, stored, status=status)
     except Exception as exc:
         finish_run(cfg.db_dsn, run_id, 0, status="error")

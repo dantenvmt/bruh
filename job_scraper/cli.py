@@ -498,9 +498,9 @@ def discover_ats(
         help="Write discovery metadata for debugging (set to empty string to disable)",
     ),
     platforms: str = typer.Option(
-        "greenhouse,lever,smartrecruiters",
+        "greenhouse,lever,smartrecruiters,workday",
         "--platforms",
-        help="Comma-separated ATS platforms to detect (greenhouse,lever,smartrecruiters,workable,ashby)",
+        help="Comma-separated ATS platforms to detect (greenhouse,lever,smartrecruiters,workable,ashby,workday)",
     ),
     max_companies: int = typer.Option(200, "--max", help="Max input companies to process"),
     concurrency: int = typer.Option(8, "--concurrency", help="Parallelism (keep low to avoid blocking)"),
@@ -608,6 +608,22 @@ def discover_ats(
         include_cfg["workable"] = {"accounts": targets["workable"]}
     if targets.get("ashby"):
         include_cfg["ashby"] = {"companies": targets["ashby"]}
+    if targets.get("workday"):
+        # Workday tokens are JSON-encoded dicts; unpack to structured list
+        import json as _json
+        workday_sites = []
+        for token_json in sorted(targets["workday"]):
+            try:
+                site_dict = _json.loads(token_json)
+                workday_sites.append({
+                    "host": site_dict["host"],
+                    "tenant": site_dict["tenant"],
+                    "site": site_dict["site"],
+                })
+            except (ValueError, KeyError):
+                continue
+        if workday_sites:
+            include_cfg["workday"] = {"sites": workday_sites}
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(yaml.safe_dump(include_cfg, sort_keys=False), encoding="utf-8")
@@ -631,7 +647,7 @@ def discover_ats(
         console.print(f"  Tokens validated: {tokens_validated}")
     console.print()
 
-    for key in ("greenhouse", "lever", "smartrecruiters", "workable", "ashby"):
+    for key in ("greenhouse", "lever", "smartrecruiters", "workable", "ashby", "workday"):
         if key in targets:
             console.print(f"  [cyan]{key}[/cyan]: {len(targets[key])} boards")
 
@@ -639,6 +655,40 @@ def discover_ats(
     console.print(
         "[dim]To use it: set JOB_SCRAPER_CONFIG_INCLUDES to include this file (and keep your main config.yaml for DB/API keys).[/dim]"
     )
+
+
+@app.command("reset-sites")
+def reset_sites(
+    all_sites: bool = typer.Option(
+        False, "--all", help="Reset ALL custom sites, not just disabled ones"
+    ),
+):
+    """Re-enable disabled custom scrape sites and reset failure counters.
+
+    By default only resets sites that are currently disabled.  Pass --all
+    to reset every custom site (useful before a full test run).
+    """
+    cfg = Config()
+    if not cfg.db_dsn:
+        console.print("[red]DB DSN not configured. Set JOB_SCRAPER_DB_DSN or config.yaml db.dsn[/red]")
+        raise typer.Exit(code=1)
+
+    from .scraping.models import ScrapeSite
+
+    with session_scope(cfg.db_dsn) as session:
+        query = session.query(ScrapeSite).filter(ScrapeSite.detected_ats == "custom")
+        if not all_sites:
+            query = query.filter(ScrapeSite.enabled == False)  # noqa: E712
+        n = query.update(
+            {
+                "enabled": True,
+                "consecutive_failures": 0,
+                "next_scrape_at": None,
+                "last_error_code": None,
+            },
+            synchronize_session=False,
+        )
+    console.print(f"[green]Reset {n} custom site(s)[/green]")
 
 
 @app.command()
@@ -792,6 +842,34 @@ def spy(
         with open(output, "w") as f:
             json.dump(serializable, f, indent=2, default=str)
         console.print(f"\n[green]Saved {len(serializable)} endpoint(s) to {output}[/green]")
+
+
+@app.command("refresh-seeds")
+def refresh_seeds_cmd(
+    data_dir: Optional[Path] = typer.Option(
+        None,
+        "--data-dir",
+        "-d",
+        help="Directory containing targets_seed_150.csv (defaults to <project-root>/data)",
+    ),
+):
+    """Manually trigger seed refresh (fetch new companies from visa/fortune500 sources)."""
+    from .seed_refresh import run_seed_refresh
+
+    with Progress(
+        SpinnerColumn(spinner_name="line"),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Fetching and parsing company lists...", total=None)
+        summary = run_seed_refresh(data_dir=data_dir)
+        progress.update(task, completed=True)
+
+    console.print(f"\n[green]Seed refresh complete.[/green]")
+    console.print(f"  New companies added: {summary['total_new_added']}")
+    console.print(f"  CSV path: {summary['csv_path']}")
+    for src in summary.get("sources", []):
+        console.print(f"  [{src['source']}] new_added={src['new_added']}")
 
 
 def main():

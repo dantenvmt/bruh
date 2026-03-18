@@ -2,19 +2,23 @@
 """
 Helper script to run discovery pipeline steps.
 Usage: python run_discovery.py <command>
-Commands: status, resolve, probe, selectors
+Commands: import, status, resolve, probe, selectors, export_workday
 """
 import sys
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
 from job_scraper.config import Config
 from job_scraper.storage import get_session
 from job_scraper.scraping.models import ScrapeSite
 from job_scraper.scraping.fetchers.browser import fetch_with_browser
 from job_scraper.scraping.fetchers.static import fetch_static
+from job_scraper.discovery.workday_export import export_workday_sites_to_yaml
 from job_scraper.discovery.resolver import URLResolver
 from job_scraper.discovery.probe import ATSProbe
+from job_scraper.discovery.sources import CompanySource
+from job_scraper.discovery.types import DiscoverySource
 from job_scraper.discovery.selectors import (
     DEFAULT_SELECTOR_MIN_CONFIDENCE,
     DEFAULT_SELECTOR_MIN_JOBS,
@@ -59,6 +63,61 @@ async def _fetch_detection_html(url: str, prefer_browser: bool = True):
     if fallback_html:
         return fallback_html, "browser", None
     return None, "none", err or fallback_err or "fetch_failed"
+
+
+def import_seed_companies() -> int:
+    """Import companies from seed CSV into scrape_sites table.
+
+    Upserts on (company_name, source) — safe to re-run.
+    New entries are created with enabled=False.
+
+    Returns:
+        Number of newly inserted companies.
+    """
+    session = get_db_session()
+    source_label = DiscoverySource.SEED_CSV.value  # "seed_csv"
+    company_source = CompanySource()
+    companies = list(company_source.load(DiscoverySource.SEED_CSV))
+
+    if not companies:
+        print("No companies found in seed CSV")
+        return 0
+
+    print(f"Loaded {len(companies)} companies from seed CSV")
+
+    inserted = 0
+    skipped = 0
+    try:
+        for company in companies:
+            existing = session.query(ScrapeSite).filter(
+                ScrapeSite.company_name == company.name,
+                ScrapeSite.source == source_label,
+            ).first()
+
+            if existing:
+                skipped += 1
+                continue
+
+            site = ScrapeSite(
+                company_name=company.name,
+                careers_url=company.careers_url if company.careers_url else None,
+                source=source_label,
+                priority=company.priority,
+                enabled=False,
+            )
+            session.add(site)
+            inserted += 1
+
+        session.commit()
+        print(f"Inserted {inserted} companies, skipped {skipped} existing")
+    except Exception as e:
+        session.rollback()
+        print(f"Error importing companies: {e}")
+        raise
+    finally:
+        session.close()
+
+    return inserted
 
 
 def show_status():
@@ -140,8 +199,12 @@ def show_status():
         session.close()
 
 
-def resolve_urls(limit=50):
-    """Resolve careers URLs for companies without them."""
+def resolve_urls(limit=50) -> dict:
+    """Resolve careers URLs for companies without them.
+
+    Returns:
+        Dict with keys: resolved (int), failed (int)
+    """
     session = get_db_session()
     try:
         sites_data = session.query(ScrapeSite.id, ScrapeSite.company_name).filter(
@@ -150,7 +213,7 @@ def resolve_urls(limit=50):
 
         if not sites_data:
             print("No sites need URL resolution")
-            return
+            return {"resolved": 0, "failed": 0}
 
         print(f"Resolving URLs for {len(sites_data)} sites...")
 
@@ -190,13 +253,18 @@ def resolve_urls(limit=50):
 
         session.commit()
         print(f"\nResolved {resolved}/{len(sites_data)} URLs ({failed} failed)")
+        return {"resolved": resolved, "failed": failed}
 
     finally:
         session.close()
 
 
-def probe_ats(limit=50):
-    """Probe sites for ATS type detection."""
+def probe_ats(limit=50) -> dict:
+    """Probe sites for ATS type detection.
+
+    Returns:
+        Dict with keys: probed (int), ats_counts (dict)
+    """
     session = get_db_session()
     try:
         sites_data = session.query(
@@ -209,7 +277,7 @@ def probe_ats(limit=50):
 
         if not sites_data:
             print("No sites need ATS probing")
-            return
+            return {"probed": 0, "ats_counts": {}}
 
         print(f"Probing ATS for {len(sites_data)} sites...")
 
@@ -243,8 +311,43 @@ def probe_ats(limit=50):
         for ats, count in sorted(ats_counts.items(), key=lambda x: -x[1]):
             print(f"  {ats}: {count}")
 
+        return {"probed": len(results), "ats_counts": ats_counts}
+
     finally:
         session.close()
+
+
+def export_workday_sites(data_dir: Path | None = None, validate: bool = True) -> dict:
+    """
+    Export discovered Workday sites from scrape_sites into a YAML include file.
+
+    Queries rows with detected_ats='workday', resolves canonical Workday URL
+    triples (host/tenant/site), validates CXS endpoints, and writes
+    data/workday_sites.yaml atomically.
+    """
+    if data_dir is None:
+        data_dir = Path(__file__).parent / "data"
+
+    session = get_db_session()
+    try:
+        rows = session.query(ScrapeSite.careers_url).filter(
+            ScrapeSite.detected_ats == "workday",
+            ScrapeSite.careers_url != None,
+            ScrapeSite.careers_url != "",
+        ).all()
+    finally:
+        session.close()
+
+    urls = [url for (url,) in rows if url]
+    output_path = data_dir / "workday_sites.yaml"
+    result = export_workday_sites_to_yaml(
+        urls,
+        output_path,
+        timeout=15.0,
+        validate=validate,
+    )
+    print(f"Exported {result.get('exported', 0)} Workday sites to {output_path}")
+    return result
 
 
 def detect_selectors(limit=30):
@@ -376,12 +479,14 @@ def detect_selectors(limit=30):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_discovery.py <command>")
-        print("Commands: status, resolve, probe, selectors")
+        print("Commands: import, status, resolve, probe, selectors, export_workday")
         sys.exit(1)
 
     cmd = sys.argv[1]
 
-    if cmd == "status":
+    if cmd == "import":
+        import_seed_companies()
+    elif cmd == "status":
         show_status()
     elif cmd == "resolve":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
@@ -392,6 +497,8 @@ if __name__ == "__main__":
     elif cmd == "selectors":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 30
         detect_selectors(limit)
+    elif cmd == "export_workday":
+        export_workday_sites()
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

@@ -17,6 +17,7 @@ beautifulsoup4>=4.12.0
 # Security updates
 aiohttp>=3.13.3
 python-multipart>=0.0.22
+pypdf>=4.0.0
 starlette>=0.47.2
 urllib3>=2.6.3
 requests>=2.32.4
@@ -24,5 +25,12 @@ werkzeug>=3.1.5
 filelock>=3.20.3
 protobuf>=5.29.5
 python-jose>=3.4.0
+# Browser-based fetcher (required for JS-rendered career pages)
+playwright>=1.40.0
+# Optional: LLM parser providers (only needed when llm_parser is enabled)
 groq>=0.8.0
-huggingface_hub>=0.23.0
+# huggingface_hub>=0.23.0
+# Optional: Redis cache + rate-limiter persistence (graceful degradation if absent)
+redis>=5.0.0
+# Optional: Apify actor-based scraping (Indeed, LinkedIn, Glassdoor via Apify platform)
+apify-client>=1.6.0

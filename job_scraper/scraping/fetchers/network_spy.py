@@ -433,6 +433,31 @@ class NetworkSpy:
         )
         return endpoints
 
+    def score_captured(self, calls: list[CapturedCall]) -> list[DiscoveredEndpoint]:
+        """Score pre-captured network calls without launching a browser.
+
+        Accepts :class:`CapturedCall` objects already collected (e.g. by the
+        browser fetcher with ``capture_network=True``) and runs only the
+        scoring / filtering logic — no Playwright, no navigation.
+        """
+        endpoints: list[DiscoveredEndpoint] = []
+        for call in calls:
+            if not call.is_json:
+                continue
+            ep = self._score(call)
+            if ep.confidence >= self.min_confidence:
+                endpoints.append(ep)
+        endpoints.sort(key=lambda e: e.confidence, reverse=True)
+        logger.info(
+            "NetworkSpy scored %d pre-captured calls; "
+            "%d are JSON, %d pass min_confidence=%.2f",
+            len(calls),
+            sum(1 for c in calls if c.is_json),
+            len(endpoints),
+            self.min_confidence,
+        )
+        return endpoints
+
     async def record_raw(self, url: str) -> list[CapturedCall]:
         """Low-level: return every :class:`CapturedCall` without scoring."""
         return await self._capture(url)
@@ -540,44 +565,12 @@ class NetworkSpy:
         return calls
 
     async def _scroll_page(self, page: Any) -> None:
-        """Scroll down in steps to trigger lazy-loaded content."""
-        try:
-            for _ in range(6):
-                await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
-                await asyncio.sleep(0.4)
-            # Scroll back to top (some sites re-fetch on scroll up)
-            await page.evaluate("window.scrollTo(0, 0)")
-        except Exception as exc:
-            logger.debug("Scroll failed (non-fatal): %s", exc)
+        from ._interactions import scroll_page
+        await scroll_page(page)
 
     async def _click_load_more(self, page: Any) -> None:
-        """Click common 'Load More' / 'Next' pagination triggers once."""
-        selectors = [
-            "button:has-text('Load more')",
-            "button:has-text('Show more')",
-            "button:has-text('More jobs')",
-            "button:has-text('See more jobs')",
-            "button:has-text('View more')",
-            "[data-automation='pagination-next']",
-            "[aria-label='Next page']",
-            "[aria-label='Load more']",
-            "a:has-text('Next')",
-            ".load-more",
-            "#load-more",
-            "[class*='loadMore']",
-            "[class*='load-more']",
-            "[class*='show-more']",
-        ]
-        for sel in selectors:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=800):
-                    await btn.click()
-                    await asyncio.sleep(1.5)
-                    logger.debug("Clicked load-more selector: %s", sel)
-                    break
-            except Exception:
-                continue
+        from ._interactions import click_load_more
+        await click_load_more(page)
 
     def _score(self, call: CapturedCall) -> DiscoveredEndpoint:
         """Convert a :class:`CapturedCall` into a scored :class:`DiscoveredEndpoint`."""

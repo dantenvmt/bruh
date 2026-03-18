@@ -1,6 +1,6 @@
 """Add job enrichment columns and user analytics tables.
 
-Revision ID: 007_add_job_enrichment_and_user_analytics
+Revision ID: 007_job_enrichment
 Revises: 006_extend_scrape_sites
 Create Date: 2026-02-22
 """
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "007_add_job_enrichment_and_user_analytics"
+revision = "007_job_enrichment"
 down_revision = "006_extend_scrape_sites"
 branch_labels = None
 depends_on = None

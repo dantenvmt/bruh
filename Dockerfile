@@ -16,6 +16,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright browsers + system deps (must run as root)
+# Use a shared cache dir so appuser can access the browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install chromium --with-deps && chmod -R 755 /ms-playwright
+
 # Copy application code
 COPY . .
 

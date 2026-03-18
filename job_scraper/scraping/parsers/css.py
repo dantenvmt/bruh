@@ -25,7 +25,7 @@ MAX_TITLE_LENGTH = 200  # Longer = likely scraped wrong element
 
 # Patterns that indicate garbage titles (nav, footer, generic links)
 GARBAGE_TITLE_PATTERNS = [
-    r"^(home|about|contact|careers|jobs|login|sign in|sign up|register)$",
+    r"^(home|about|contact|career|careers|job|jobs|login|sign in|sign up|register)$",
     r"^(privacy|terms|cookie|legal|help|faq|support|blog|news)$",
     r"^(facebook|twitter|linkedin|instagram|youtube|tiktok)$",
     r"^(menu|navigation|skip to|go to|back to|view all|see all|load more)$",
@@ -33,8 +33,24 @@ GARBAGE_TITLE_PATTERNS = [
     r"^\d+$",  # Pure numbers
     r"^[a-z]$",  # Single letters
     r"^(yes|no|ok|cancel|submit|apply|search)$",
+    r"^(join us|who we are|early careers|all other roles)$",
+    r"^(diversity inclusion|research and development|opportunities pre college)$",
+    r"^(locations?|teams?|benefits?|accessibility|accommodation|students?|shared values)$",
+    r"^.+\.(html?|php|aspx?)$",
+    # UI buttons / CTA text scraped as job titles
+    r"^(apply now|learn more|read more|view details|view more|click here|get started)$",
+    r"^(show more|see details|explore|discover|find out more|view job|view jobs)$",
+    r"^learn more about.+",   # "Learn more about our accommodations..."
+    r"^apply now.+",          # "Apply nowabout Oracle NetSuite"
 ]
 GARBAGE_REGEX = re.compile("|".join(GARBAGE_TITLE_PATTERNS), re.IGNORECASE)
+
+# Titles ending in a country-code pair like "Engineer Fr Fr" or "Manager De De"
+# are locale variants scraped from multinational ATS pages — not US jobs.
+_COUNTRY_CODE_SUFFIX_RE = re.compile(r"\s+[A-Za-z]{2}\s+[A-Za-z]{2}$")
+
+# Titles with a high ratio of non-ASCII characters are likely non-English.
+_NON_ASCII_RE = re.compile(r"[^\x00-\x7F]")
 
 # URL patterns that indicate non-job links
 GARBAGE_URL_PATTERNS = [
@@ -48,6 +64,51 @@ GARBAGE_URL_PATTERNS = [
     r"^javascript:",
 ]
 GARBAGE_URL_REGEX = re.compile("|".join(GARBAGE_URL_PATTERNS), re.IGNORECASE)
+
+# URL must look like a job detail or known ATS posting endpoint.
+JOB_URL_SIGNAL_REGEX = re.compile(
+    r"/(jobs?|positions?|openings?|opportunities|postings?|vacancies|requisitions?|reqs?|apply|careers?)(/|$|-)",
+    re.IGNORECASE,
+)
+ATS_URL_SIGNAL_REGEX = re.compile(
+    r"("
+    r"boards\\.greenhouse\\.io/[^/]+/jobs/\\d+"
+    r"|jobs\\.lever\\.co/[^/]+/[a-f0-9-]+"
+    r"|jobs\\.ashbyhq\\.com/[^/]+/[a-f0-9-]+"
+    r"|apply\\.workable\\.com/[^/]+/j/[A-Z0-9]+"
+    r"|[^/]+\\.myworkdayjobs\\.com/.+/job/"
+    r"|[^/]+\\.icims\\.com/jobs?/\\d+"
+    r"|smartrecruiters\\.com/[^/]+/[0-9]+"
+    r"|careers\\.(amd|arm)\\.com/job/"
+    r"|jobs\\.boeing\\.com/job/"
+    r")",
+    re.IGNORECASE,
+)
+MARKETING_PATH_REGEX = re.compile(
+    r"/("
+    r"about(-us)?"
+    r"|benefits?"
+    r"|culture"
+    r"|diversity(-inclusion)?"
+    r"|events?"
+    r"|insights?"
+    r"|investors?"
+    r"|join-us"
+    r"|life-at(-[a-z0-9-]+)?"
+    r"|locations?"
+    r"|news(room)?"
+    r"|products?"
+    r"|science"
+    r"|stories"
+    r"|students?"
+    r"|team(s)?"
+    r"|who-we-are"
+    r"|work-at(-[a-z0-9-]+)?"
+    r"|choose-country-region"
+    r")(?:/|$|\.)",
+    re.IGNORECASE,
+)
+NON_HTML_RESOURCE_REGEX = re.compile(r"\.(pdf|docx?|pptx?|xlsx?)$", re.IGNORECASE)
 
 
 def _is_valid_job(job: RawScrapedJob, base_url: str) -> bool:
@@ -66,6 +127,15 @@ def _is_valid_job(job: RawScrapedJob, base_url: str) -> bool:
     if GARBAGE_REGEX.match(title):
         return False
 
+    # Drop locale variants — titles ending in "XX XX" country code pairs
+    if _COUNTRY_CODE_SUFFIX_RE.search(title):
+        return False
+
+    # Drop titles where >30% of characters are non-ASCII (likely non-English)
+    non_ascii_count = len(_NON_ASCII_RE.findall(title))
+    if non_ascii_count / max(len(title), 1) > 0.30:
+        return False
+
     # URL validation
     if not job.url:
         return False
@@ -73,6 +143,10 @@ def _is_valid_job(job: RawScrapedJob, base_url: str) -> bool:
     # Skip same-page anchors
     parsed = urlparse(job.url)
     if not parsed.path or parsed.path == "/":
+        return False
+
+    # Skip links to documents/resources, not job detail pages.
+    if NON_HTML_RESOURCE_REGEX.search(parsed.path):
         return False
 
     # Skip garbage URL patterns
@@ -83,6 +157,14 @@ def _is_valid_job(job: RawScrapedJob, base_url: str) -> bool:
     base_parsed = urlparse(base_url)
     if parsed.netloc == base_parsed.netloc and parsed.path == base_parsed.path:
         return False
+
+    # URL must look job-like.
+    full_url = job.url
+    if not ATS_URL_SIGNAL_REGEX.search(full_url):
+        if not JOB_URL_SIGNAL_REGEX.search(parsed.path):
+            return False
+        if MARKETING_PATH_REGEX.search(parsed.path):
+            return False
 
     return True
 

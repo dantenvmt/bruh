@@ -31,6 +31,7 @@ ATS_URL_PATTERNS: list[tuple[ATSType, str, float]] = [
     (ATSType.SMARTRECRUITERS, r"smartrecruiters\.com", 1.0),
     (ATSType.WORKDAY, r"myworkdayjobs\.com", 1.0),
     (ATSType.ICIMS, r"icims\.com", 1.0),
+    (ATSType.WORKABLE, r"apply\.workable\.com", 1.0),
     (ATSType.TALEO, r"taleo\.net", 1.0),
 ]
 
@@ -39,6 +40,7 @@ ATS_DOM_PATTERNS: list[tuple[ATSType, str, float]] = [
     (ATSType.GREENHOUSE, r'greenhouse\.io/embed', 0.7),
     (ATSType.WORKDAY, r'wd5\.myworkday', 0.5),
     (ATSType.ICIMS, r'<script[^>]+icims', 0.5),
+    (ATSType.WORKABLE, r'workable\.com/[^"\']+/widget', 0.6),
 ]
 
 
@@ -119,6 +121,26 @@ def extract_ats_token(url: str, ats: ATSType) -> Optional[str]:
         if path_parts:
             return path_parts[0]
 
+    elif ats == ATSType.WORKABLE:
+        # apply.workable.com/{company}
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if path_parts:
+            return path_parts[0]
+
+    elif ats == ATSType.WORKDAY:
+        # {tenant}.myworkdayjobs.com/.../{site}
+        tenant = parsed.netloc.split(".")[0]
+        path_parts = [p for p in parsed.path.split("/") if p]
+        # Filter out language prefixes like "en-US"
+        site_parts = [p for p in path_parts if not re.match(r"^[a-z]{2}(-[A-Z]{2})?$", p)]
+        site = site_parts[0] if site_parts else None
+        if tenant and site:
+            return f"{tenant}/{site}"
+
+    elif ats == ATSType.ICIMS:
+        # {company}.icims.com or careers-{company}.icims.com
+        return parsed.netloc
+
     return None
 
 
@@ -174,7 +196,7 @@ class ATSProbe:
         self,
         compliance: Optional[ComplianceGate] = None,
         timeout: float = 15.0,
-        try_api_spy: bool = False,
+        try_api_spy: bool = True,
         api_spy_min_confidence: float = 0.5,
     ):
         """Initialize ATS probe.

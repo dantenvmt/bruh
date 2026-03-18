@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -28,9 +28,18 @@ from ..storage import (
     RunRecord,
     RunSourceRecord,
     UserJobEventRecord,
+    UserResumeRecord,
     UserSavedJobRecord,
     session_scope,
     get_run_sources,
+)
+from ..resume import (
+    analyze_resume,
+    extract_resume_profile,
+    extract_text_from_pdf,
+    optimize_resume,
+    summarize_job,
+    ResumeOptimizeError,
 )
 from ..utils import sanitize_html
 
@@ -248,7 +257,8 @@ def _get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
-limiter = Limiter(key_func=get_remote_address)
+_storage_uri = os.getenv("REDIS_URL") or "memory://"
+limiter = Limiter(key_func=get_remote_address, storage_uri=_storage_uri)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -286,6 +296,21 @@ def _job_to_dict(job: JobRecord, include_raw: bool = False) -> dict:
     if SANITIZE_HTML and description:
         description = sanitize_html(description)
 
+    # Build human-readable experience range
+    exp_min = job.experience_min_years
+    exp_max = job.experience_max_years
+    exp_level = (job.experience_level or "").strip()
+    if exp_min is not None and exp_max is not None:
+        experience_range = f"{exp_min}-{exp_max} yrs"
+    elif exp_min is not None:
+        experience_range = f"{exp_min}+ yrs"
+    elif exp_max is not None:
+        experience_range = f"Up to {exp_max} yrs"
+    elif exp_level:
+        experience_range = exp_level.capitalize()
+    else:
+        experience_range = "Not specified"
+
     data = {
         "id": str(job.id),
         "dedupe_key": job.dedupe_key,  # Stable identifier for saved jobs
@@ -306,6 +331,7 @@ def _job_to_dict(job: JobRecord, include_raw: bool = False) -> dict:
         "experience_level": job.experience_level,
         "experience_min_years": job.experience_min_years,
         "experience_max_years": job.experience_max_years,
+        "experience_range": experience_range,
         "required_skills": job.required_skills,
         "industry": job.industry,
         "industry_confidence": job.industry_confidence,
@@ -313,6 +339,17 @@ def _job_to_dict(job: JobRecord, include_raw: bool = False) -> dict:
         "role_pop_reasons": job.role_pop_reasons,
         "enrichment_version": job.enrichment_version,
         "enrichment_updated_at": job.enrichment_updated_at.isoformat() if job.enrichment_updated_at else None,
+        "ai_summary_card": job.ai_summary_card,
+        "ai_summary_detail": job.ai_summary_detail or (
+            {
+                "summary_short": job.ai_summary_card,
+                "summary_bullets": job.ai_summary_bullets or [],
+                "attention_tags": [],
+            }
+            if job.ai_summary_card or job.ai_summary_bullets
+            else None
+        ),
+        "ai_summarized_at": job.ai_summarized_at.isoformat() if job.ai_summarized_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -370,6 +407,15 @@ def _apply_job_filters(
         stmt = stmt.where(JobRecord.location.ilike(f"%{safe_location}%", escape="\\"))
     if source:
         stmt = stmt.where(JobRecord.source == source)
+    else:
+        # Exclude thin jobs (no description AND no location) so sparse
+        # custom-scraper entries don't bury richer API-sourced results.
+        stmt = stmt.where(
+            or_(
+                JobRecord.description.is_not(None),
+                JobRecord.location.is_not(None),
+            )
+        )
     if remote is not None:
         stmt = stmt.where(JobRecord.remote == remote)
     if visa is not None:
@@ -545,19 +591,14 @@ def list_jobs(
         # Apply snapshot boundary - only jobs updated at or before as_of
         stmt = stmt.where(JobRecord.updated_at <= as_of_dt)
 
-        # Apply cursor (keyset pagination)
+        # Decode offset cursor (int offset into the interleaved pool)
+        offset = 0
         if cursor:
-            cursor_updated_at, cursor_id = _decode_cursor(cursor)
-            # WHERE (updated_at, id) < (cursor_updated_at, cursor_id)
-            stmt = stmt.where(
-                or_(
-                    JobRecord.updated_at < cursor_updated_at,
-                    and_(
-                        JobRecord.updated_at == cursor_updated_at,
-                        JobRecord.id < cursor_id,
-                    ),
-                )
-            )
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                offset = int(payload.get("offset", 0))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid cursor format")
 
         # Apply filters
         stmt = _apply_job_filters(
@@ -579,18 +620,35 @@ def list_jobs(
             stale_after_days=stale_after_days,
         )
 
-        # Fetch one extra to determine has_more
-        stmt = stmt.limit(limit + 1)
-        jobs = list(session.execute(stmt).scalars().all())
+        # Fetch a large pool, interleave by company across all pages.
+        # Pool is capped at 500; as_of snapshot keeps it stable across pages.
+        pool_size = 500
+        stmt = stmt.limit(pool_size)
+        raw = list(session.execute(stmt).scalars().all())
 
-        has_more = len(jobs) > limit
-        jobs = jobs[:limit]
+        # Round-robin interleave by company across the entire pool
+        from collections import defaultdict
+        buckets: dict = defaultdict(list)
+        for job in raw:
+            buckets[job.company or ""].append(job)
+        interleaved: list = []
+        while any(buckets.values()):
+            for key in list(buckets.keys()):
+                if buckets[key]:
+                    interleaved.append(buckets[key].pop(0))
+                else:
+                    del buckets[key]
 
-        # Build next_cursor from last item
+        page = interleaved[offset: offset + limit]
+        has_more = (offset + limit) < len(interleaved)
+        jobs = page
+
         next_cursor = None
-        if has_more and jobs:
-            last_job = jobs[-1]
-            next_cursor = _encode_cursor(last_job.updated_at, last_job.id)
+        if has_more:
+            next_offset = offset + limit
+            next_cursor = base64.urlsafe_b64encode(
+                json.dumps({"offset": next_offset}).encode()
+            ).decode()
 
         return {
             "items": [_job_to_dict(j) for j in jobs],
@@ -1347,6 +1405,361 @@ def unsave_job(
         )
 
     return {"removed": True}
+
+
+def _validate_user_id(user_id: Optional[str]) -> str:
+    """Validate and return the user_id; raises 400 if empty or too long."""
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    if len(user_id) > 128:
+        raise HTTPException(status_code=400, detail="user_id exceeds 128 characters")
+    return user_id.strip()
+
+
+@router.post("/resume")
+@limiter.limit(RATE_LIMIT)
+async def upload_resume(
+    request: Request,
+    user_id: Optional[str] = Query(None),
+    file: UploadFile = File(...),
+) -> dict:
+    """Upload a PDF resume for a user. Replaces any previously active resume."""
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    uid = _validate_user_id(user_id)
+
+    # Content-type guard
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=415,
+            detail=f"Only PDF files are accepted (got {file.content_type!r})",
+        )
+
+    # Size cap: 5 MB
+    MAX_SIZE = 5 * 1024 * 1024
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(file_bytes)} bytes). Maximum is 5 MB.",
+        )
+
+    # Extract text
+    try:
+        raw_text = extract_text_from_pdf(file_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Extract skills + experience from resume (non-fatal if Groq not configured)
+    profile = await extract_resume_profile(
+        resume_text=raw_text,
+        llm_config=cfg.llm_parser,
+    )
+
+    with session_scope(cfg.db_dsn) as session:
+        # Soft-deactivate prior resumes
+        session.query(UserResumeRecord).filter(
+            UserResumeRecord.user_id == uid,
+            UserResumeRecord.is_active == True,
+        ).update({"is_active": False})
+
+        resume = UserResumeRecord(
+            user_id=uid,
+            raw_text=raw_text,
+            filename=file.filename,
+            extracted_skills=profile["skills"] or None,
+            extracted_experience_years=profile["experience_years"],
+            is_active=True,
+        )
+        session.add(resume)
+        session.flush()
+
+        return {
+            "resume_id": str(resume.id),
+            "user_id": resume.user_id,
+            "extracted_text_preview": raw_text[:200],
+            "filename": resume.filename,
+            "extracted_skills": profile["skills"],
+            "extracted_experience_years": profile["experience_years"],
+            "skills_extracted": len(profile["skills"]) > 0,
+            "created_at": resume.created_at.isoformat() if resume.created_at else None,
+        }
+
+
+@router.get("/resume")
+@limiter.limit(RATE_LIMIT)
+def get_resume(
+    request: Request,
+    user_id: Optional[str] = Query(None),
+) -> dict:
+    """Get the most recent active resume for a user."""
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    uid = _validate_user_id(user_id)
+
+    with session_scope(cfg.db_dsn) as session:
+        resume = (
+            session.query(UserResumeRecord)
+            .filter(
+                UserResumeRecord.user_id == uid,
+                UserResumeRecord.is_active == True,
+            )
+            .order_by(UserResumeRecord.created_at.desc())
+            .first()
+        )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="No active resume found for this user")
+
+        return {
+            "resume_id": str(resume.id),
+            "user_id": resume.user_id,
+            "raw_text": resume.raw_text,
+            "filename": resume.filename,
+            "created_at": resume.created_at.isoformat() if resume.created_at else None,
+            "updated_at": resume.updated_at.isoformat() if resume.updated_at else None,
+        }
+
+
+@router.post("/jobs/{job_id}/optimize-resume")
+@limiter.limit(RATE_LIMIT)
+async def optimize_resume_for_job(
+    job_id: UUID,
+    request: Request,
+    user_id: Optional[str] = Query(None),
+    payload: dict = Body(...),
+) -> dict:
+    """Optimize a user's resume against a specific job using an LLM.
+
+    Modes: "bullets" | "overview" | "full_rewrite"
+    """
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    uid = _validate_user_id(user_id)
+
+    mode = str(payload.get("mode") or "").strip()
+    if mode not in ("bullets", "overview", "full_rewrite"):
+        raise HTTPException(
+            status_code=400,
+            detail="mode must be one of: 'bullets', 'overview', 'full_rewrite'",
+        )
+
+    # Fetch job and resume in one session, snapshot to locals before closing
+    with session_scope(cfg.db_dsn) as session:
+        job = session.query(JobRecord).filter(JobRecord.id == job_id).first()
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        resume = (
+            session.query(UserResumeRecord)
+            .filter(
+                UserResumeRecord.user_id == uid,
+                UserResumeRecord.is_active == True,
+            )
+            .order_by(UserResumeRecord.created_at.desc())
+            .first()
+        )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="No active resume found for this user")
+
+        # Snapshot fields before session closes
+        job_title = job.title or ""
+        job_company = job.company or ""
+        job_description = job.description or ""
+        required_skills = list(job.required_skills or [])
+        resume_text = resume.raw_text
+
+    # Call LLM outside the DB session
+    try:
+        result = await optimize_resume(
+            resume_text=resume_text,
+            job_title=job_title,
+            job_company=job_company,
+            job_description=job_description,
+            required_skills=required_skills,
+            mode=mode,
+            llm_config=cfg.llm_parser,
+        )
+    except ResumeOptimizeError as exc:
+        msg = str(exc)
+        if "not installed" in msg or "not configured" in msg:
+            raise HTTPException(status_code=503, detail=msg)
+        raise HTTPException(status_code=502, detail=f"LLM API error: {msg}")
+
+    response: dict = {"job_id": str(job_id), "mode": mode}
+    response.update(result)
+    return response
+
+
+@router.post("/jobs/{job_id}/summary")
+@limiter.limit(RATE_LIMIT)
+async def get_job_summary(
+    job_id: UUID,
+    request: Request,
+) -> dict:
+    """Generate (or return cached) an AI summary of a job description using Groq.
+
+    On first call: calls Groq, stores result in DB, returns result.
+    On subsequent calls: returns stored summary instantly from DB.
+    Returns 503 if Groq is not configured and no cached summary exists.
+    """
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    with session_scope(cfg.db_dsn) as session:
+        job = session.query(JobRecord).filter(JobRecord.id == job_id).first()
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        # Return stored summary if already generated
+        if job.ai_summarized_at is not None:
+            return {
+                "job_id": str(job_id),
+                "ai_summary_card": job.ai_summary_card,
+                "ai_summary_detail": job.ai_summary_detail,
+                # Legacy fields
+                "summary_short": (job.ai_summary_detail or {}).get("summary_short", ""),
+                "summary_bullets": (job.ai_summary_detail or {}).get("summary_bullets", []),
+                "attention_tags": (job.ai_summary_detail or {}).get("attention_tags", []),
+                "cached": True,
+            }
+
+        # Snapshot before session closes
+        job_title = job.title or ""
+        job_company = job.company or ""
+        job_description = job.description or ""
+        tags = list(job.tags or [])
+
+    # Call Groq outside DB session
+    try:
+        result = await summarize_job(
+            job_id=str(job_id),
+            job_title=job_title,
+            job_company=job_company,
+            job_description=job_description,
+            tags=tags,
+            llm_config=cfg.llm_parser,
+        )
+    except ResumeOptimizeError as exc:
+        msg = str(exc)
+        if "not installed" in msg or "not configured" in msg:
+            raise HTTPException(status_code=503, detail=msg)
+        raise HTTPException(status_code=502, detail=f"LLM API error: {msg}")
+
+    # Persist summaries back to the job row
+    with session_scope(cfg.db_dsn) as session:
+        session.query(JobRecord).filter(JobRecord.id == job_id).update(
+            {
+                "ai_summary_card": result["ai_summary_card"],
+                "ai_summary_detail": result["ai_summary_detail"],
+                "ai_summarized_at": datetime.utcnow(),
+            }
+        )
+
+    result["cached"] = False
+    return result
+
+
+@router.post("/resume/analyze")
+@limiter.limit(RATE_LIMIT)
+async def analyze_resume_endpoint(
+    request: Request,
+    user_id: Optional[str] = Query(None),
+    payload: dict = Body(...),
+) -> dict:
+    """Analyze a user's stored resume generally (not tied to a specific job).
+
+    Body: {"critique_level": "light"|"balanced"|"hardcore"}
+    Returns score, headline, strengths, gaps, priority_actions.
+    """
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    uid = _validate_user_id(user_id)
+
+    critique_level = str(payload.get("critique_level") or "balanced").strip()
+    if critique_level not in ("light", "balanced", "hardcore"):
+        raise HTTPException(
+            status_code=400,
+            detail="critique_level must be 'light', 'balanced', or 'hardcore'",
+        )
+
+    with session_scope(cfg.db_dsn) as session:
+        resume = (
+            session.query(UserResumeRecord)
+            .filter(
+                UserResumeRecord.user_id == uid,
+                UserResumeRecord.is_active == True,
+            )
+            .order_by(UserResumeRecord.created_at.desc())
+            .first()
+        )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="No active resume found for this user")
+        resume_text = resume.raw_text
+
+    try:
+        result = await analyze_resume(
+            resume_text=resume_text,
+            critique_level=critique_level,
+            llm_config=cfg.llm_parser,
+        )
+    except ResumeOptimizeError as exc:
+        msg = str(exc)
+        if "not installed" in msg or "not configured" in msg:
+            raise HTTPException(status_code=503, detail=msg)
+        raise HTTPException(status_code=502, detail=f"LLM API error: {msg}")
+
+    return result
+
+
+@router.get("/resume/match-profile")
+@limiter.limit(RATE_LIMIT)
+def get_resume_match_profile(
+    request: Request,
+    user_id: Optional[str] = Query(None),
+) -> dict:
+    """Return the extracted skills and experience years from the user's stored resume.
+
+    Used by the frontend to feed the match scorer without requiring manual input.
+    Returns skills_extracted: false and empty skills if profile was not extracted
+    (e.g. Groq was not configured at upload time).
+    """
+    cfg = _get_config()
+    if not cfg.db_dsn:
+        raise HTTPException(status_code=500, detail="DB not configured")
+
+    uid = _validate_user_id(user_id)
+
+    with session_scope(cfg.db_dsn) as session:
+        resume = (
+            session.query(UserResumeRecord)
+            .filter(
+                UserResumeRecord.user_id == uid,
+                UserResumeRecord.is_active == True,
+            )
+            .order_by(UserResumeRecord.created_at.desc())
+            .first()
+        )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="No active resume found for this user")
+
+        skills = list(resume.extracted_skills or [])
+        experience_years = resume.extracted_experience_years
+
+        return {
+            "user_id": uid,
+            "skills": skills,
+            "experience_years": experience_years,
+            "skills_extracted": len(skills) > 0,
+        }
 
 
 # Register the versioned router — all routes are now accessible under /api/v1

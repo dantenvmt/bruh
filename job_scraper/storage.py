@@ -78,6 +78,15 @@ class JobRecord(Base):
     enrichment_version = Column(Integer, nullable=True)
     enrichment_updated_at = Column(DateTime(timezone=False), nullable=True)
     raw_payload = Column(JSONB, nullable=True)
+    ai_summary_card = Column(Text, nullable=True)
+    ai_summary_detail = Column(JSONB, nullable=True)
+    ai_summarized_at = Column(DateTime(timezone=False), nullable=True)
+    salary_min = Column(Integer, nullable=True)
+    salary_max = Column(Integer, nullable=True)
+    seniority = Column(String(32), nullable=True)
+    visa_sponsorship = Column(Boolean, nullable=True)
+    ai_summary_bullets = Column(JSONB, nullable=True)
+    normalized_at = Column(DateTime(timezone=False), nullable=True)
     created_at = Column(DateTime(timezone=False), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=False), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_seen_at = Column(DateTime(timezone=False), server_default=func.now(), nullable=False)
@@ -177,6 +186,25 @@ class UserSavedJobRecord(Base):
             "(user_id IS NOT NULL) OR (guest_session_id IS NOT NULL)",
             name="ck_user_saved_jobs_identity_required",
         ),
+    )
+
+
+class UserResumeRecord(Base):
+    __tablename__ = "user_resumes"
+
+    id                       = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id                  = Column(String(128), nullable=False, index=True)
+    raw_text                 = Column(Text, nullable=False)
+    filename                 = Column(String(256), nullable=True)
+    extracted_skills         = Column(JSONB, nullable=True)
+    extracted_experience_years = Column(Integer, nullable=True)
+    created_at               = Column(DateTime(timezone=False), server_default=func.now(), nullable=False)
+    updated_at               = Column(DateTime(timezone=False), server_default=func.now(), onupdate=func.now(), nullable=False)
+    is_active                = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index("idx_user_resumes_user_id", "user_id"),
+        Index("idx_user_resumes_user_id_created", "user_id", "created_at"),
     )
 
 
@@ -362,6 +390,13 @@ def upsert_jobs(dsn: str, run_id: Optional[uuid.UUID], jobs: Iterable[JobModel],
                 "enrichment_version": job.enrichment_version,
                 "enrichment_updated_at": datetime.utcnow() if job.enrichment_version is not None else None,
                 "raw_payload": job.raw_payload if STORE_RAW_PAYLOAD else None,
+                "salary_min": job.salary_min,
+                "salary_max": job.salary_max,
+                "seniority": job.seniority,
+                "visa_sponsorship": job.visa_sponsorship,
+                "ai_summary_card": job.ai_summary_card,
+                "ai_summary_bullets": job.ai_summary_bullets,
+                "normalized_at": datetime.fromisoformat(job.normalized_at.replace("Z", "+00:00")).replace(tzinfo=None) if job.normalized_at else None,
             }
         )
 
@@ -381,10 +416,10 @@ def upsert_jobs(dsn: str, run_id: Optional[uuid.UUID], jobs: Iterable[JobModel],
                 "source_job_id": stmt.excluded.source_job_id,
                 "title": stmt.excluded.title,
                 "company": stmt.excluded.company,
-                "location": stmt.excluded.location,
+                "location": func.coalesce(func.nullif(stmt.excluded.location, ''), JobRecord.location),
                 "url": stmt.excluded.url,
-                "description": stmt.excluded.description,
-                "salary": stmt.excluded.salary,
+                "description": func.coalesce(func.nullif(stmt.excluded.description, ''), JobRecord.description),
+                "salary": func.coalesce(func.nullif(stmt.excluded.salary, ''), JobRecord.salary),
                 "employment_type": stmt.excluded.employment_type,
                 "posted_date": stmt.excluded.posted_date,
                 "remote": stmt.excluded.remote,
@@ -402,6 +437,13 @@ def upsert_jobs(dsn: str, run_id: Optional[uuid.UUID], jobs: Iterable[JobModel],
                 "enrichment_version": stmt.excluded.enrichment_version,
                 "enrichment_updated_at": stmt.excluded.enrichment_updated_at,
                 "raw_payload": stmt.excluded.raw_payload if STORE_RAW_PAYLOAD else None,
+                "salary_min": func.coalesce(stmt.excluded.salary_min, JobRecord.salary_min),
+                "salary_max": func.coalesce(stmt.excluded.salary_max, JobRecord.salary_max),
+                "seniority": func.coalesce(stmt.excluded.seniority, JobRecord.seniority),
+                "visa_sponsorship": func.coalesce(stmt.excluded.visa_sponsorship, JobRecord.visa_sponsorship),
+                "ai_summary_card": func.coalesce(func.nullif(stmt.excluded.ai_summary_card, ''), JobRecord.ai_summary_card),
+                "ai_summary_bullets": func.coalesce(stmt.excluded.ai_summary_bullets, JobRecord.ai_summary_bullets),
+                "normalized_at": func.coalesce(stmt.excluded.normalized_at, JobRecord.normalized_at),
                 "updated_at": func.now(),
                 "last_seen_at": func.now(),
             }

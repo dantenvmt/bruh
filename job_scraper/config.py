@@ -296,7 +296,7 @@ class Config:
             25,
         )
         config["jsearch"]["max_pages"] = _to_int(
-            os.getenv("JSEARCH_MAX_PAGES", config.get("jsearch", {}).get("max_pages", 10)),
+            os.getenv("JSEARCH_MAX_PAGES", config.get("jsearch", {}).get("max_pages", 50)),
             10,
         )
         config["jsearch"]["max_retries"] = _to_int(
@@ -541,9 +541,9 @@ class Config:
         config["ingestion"]["max_posting_age_days"] = _to_int(
             os.getenv(
                 "JOB_SCRAPER_MAX_POSTING_AGE_DAYS",
-                config.get("ingestion", {}).get("max_posting_age_days", 60),
+                config.get("ingestion", {}).get("max_posting_age_days", 120),
             ),
-            60,
+            120,
         )
 
         config.setdefault("analytics", {})
@@ -844,6 +844,6 @@ class Config:
 
     @property
     def max_posting_age_days(self) -> int:
-        """Maximum posting age to keep when posted_date is available (default: 60)."""
+        """Maximum posting age to keep when posted_date is available (default: 120)."""
         ingestion_config = self._config.get("ingestion", {})
-        return _to_int(ingestion_config.get("max_posting_age_days", 60), 60)
+        return _to_int(ingestion_config.get("max_posting_age_days", 120), 120)

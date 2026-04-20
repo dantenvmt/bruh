@@ -143,7 +143,7 @@ def ingest(
     query: Optional[str] = typer.Option(None, "--query", "-q", help="Keyword query"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location filter"),
     sources: Optional[str] = typer.Option(None, "--sources", "-s", help="Comma-separated sources"),
-    max_per_source: int = typer.Option(100, "--max", "-m", help="Max results per source"),
+    max_per_source: int = typer.Option(1000, "--max", "-m", help="Max results per source"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview ingestion without DB writes"),
     rollout: Optional[int] = typer.Option(None, "--rollout", help="Limit to first N boards (sorted by priority)"),
 ):

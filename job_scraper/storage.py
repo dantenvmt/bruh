@@ -473,9 +473,11 @@ def purge_old_runs(dsn: str, retention_days: int) -> int:
             delete(RunRecord).where(RunRecord.started_at < cutoff)
         )
         runs_deleted = result.rowcount
-        # Remove jobs not seen within retention period
+        # Remove jobs not seen within retention period (use 3x multiplier so
+        # jobs from sources that only run every few days are not prematurely deleted)
+        job_cutoff = datetime.utcnow() - timedelta(days=retention_days * 3)
         session.execute(
-            delete(JobRecord).where(JobRecord.last_seen_at < cutoff)
+            delete(JobRecord).where(JobRecord.last_seen_at < job_cutoff)
         )
         return runs_deleted
 

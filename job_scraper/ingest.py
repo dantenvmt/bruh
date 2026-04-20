@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def run_ingest(
     query: Optional[str] = None,
     location: Optional[str] = None,
-    max_per_source: int = 100,
+    max_per_source: int = 1000,
     sources: Optional[List[str]] = None,
     dry_run: bool = False,
 ) -> str:
